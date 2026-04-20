@@ -18,6 +18,18 @@ echo -e "${BOLD}  ╚═══════════════════�
 echo ""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_DIR="/opt/threat-intel-platform"
+
+# ─── Relocate to /opt if not already there ────────────────────────────────────
+if [ "$SCRIPT_DIR" != "$INSTALL_DIR" ]; then
+    info "Copying project to ${INSTALL_DIR}..."
+    sudo mkdir -p "$INSTALL_DIR"
+    sudo cp -r "$SCRIPT_DIR"/. "$INSTALL_DIR"/
+    sudo chown -R "$(id -un)" "$INSTALL_DIR"
+    ok "Project installed to ${INSTALL_DIR}."
+    SCRIPT_DIR="$INSTALL_DIR"
+fi
+
 cd "$SCRIPT_DIR"
 
 # Returns the first free TCP port at or above $1
