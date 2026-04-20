@@ -45,14 +45,26 @@ find_free_port() {
 # ─── 1. Prerequisites ─────────────────────────────────────────────────────────
 header "1/5  Checking prerequisites"
 
-command -v docker  >/dev/null 2>&1 || die "Docker not found. Install from https://docs.docker.com/get-docker/"
-command -v git     >/dev/null 2>&1 || die "git not found. Install git and re-run."
-docker compose version >/dev/null 2>&1 || die "Docker Compose v2 not found. Update Docker Desktop or install the compose plugin."
+command -v docker >/dev/null 2>&1 || die "Docker not found. Install from https://docs.docker.com/get-docker/"
+command -v git    >/dev/null 2>&1 || die "git not found. Install git and re-run."
 ok "Docker and git are available."
 
-# Check Docker daemon is running
-docker info >/dev/null 2>&1 || die "Docker daemon is not running. Start Docker and re-run."
-ok "Docker daemon is running."
+# Detect whether docker needs sudo (socket permission check)
+DOCKER="docker"
+if ! docker info >/dev/null 2>&1; then
+    if sudo docker info >/dev/null 2>&1; then
+        DOCKER="sudo docker"
+        warn "Current user cannot access the Docker socket directly — using sudo for all Docker commands."
+        warn "To fix permanently: sudo usermod -aG docker $(id -un) && newgrp docker"
+    else
+        die "Docker daemon is not running or is not accessible. Run: sudo systemctl start docker"
+    fi
+fi
+ok "Docker daemon is reachable (using: ${DOCKER})."
+
+# Verify Compose v2 is available under the resolved docker command
+$DOCKER compose version >/dev/null 2>&1 || die "Docker Compose v2 not found. Run: sudo apt install docker-compose-plugin"
+ok "Docker Compose v2 confirmed."
 
 # ─── 2. Environment file ──────────────────────────────────────────────────────
 header "2/5  Configuring environment"
@@ -61,18 +73,14 @@ if [ ! -f .env ]; then
     cp .env.example .env
     info "Created .env from .env.example"
 
-    # Prompt for a secure DB password
     echo ""
     read -rsp "$(echo -e ${BLUE}Enter a strong database password${NC}: )" DB_PASS
     echo ""
     if [ -n "$DB_PASS" ]; then
-        # Update both the POSTGRES_PASSWORD and DATABASE_URL lines
-        sed -i.bak \
-            -e "s|change_me_strong_password|${DB_PASS}|g" \
-            .env && rm -f .env.bak
+        sed -i.bak -e "s|change_me_strong_password|${DB_PASS}|g" .env && rm -f .env.bak
         ok "Database password set."
     else
-        warn "Using default password — change POSTGRES_PASSWORD in .env before exposing this to a network."
+        warn "Using default password — change POSTGRES_PASSWORD in .env before exposing to a network."
     fi
 
     echo ""
@@ -99,10 +107,10 @@ header "3/5  Ollama (local AI) check"
 if command -v ollama >/dev/null 2>&1; then
     OLLAMA_MODEL=$(grep "^OLLAMA_MODEL=" .env | cut -d= -f2 || echo "llama3.2")
     info "Ollama found. Pulling model: ${OLLAMA_MODEL}"
-    ollama pull "$OLLAMA_MODEL" || warn "Could not pull ${OLLAMA_MODEL} — pull it manually with: ollama pull ${OLLAMA_MODEL}"
+    ollama pull "$OLLAMA_MODEL" || warn "Could not pull ${OLLAMA_MODEL} — run manually: ollama pull ${OLLAMA_MODEL}"
     ok "Ollama model ready."
 else
-    warn "Ollama not installed locally. The collector will fall back to Claude or Gemini API."
+    warn "Ollama not installed. The collector will fall back to Claude or Gemini API."
     warn "To install Ollama: https://ollama.com  — then run: ollama pull llama3.2"
 fi
 
@@ -135,23 +143,22 @@ fi
 info "Dashboard will be served on port ${WEBUI_PORT}."
 
 info "Building Docker images (first build may take 2-3 minutes)…"
-docker compose build
+$DOCKER compose build
 
 info "Starting services in the background…"
-docker compose up -d
+$DOCKER compose up -d
 
-# Wait briefly then show status
 sleep 3
 echo ""
-docker compose ps
+$DOCKER compose ps
 echo ""
 
 ok "Platform is running!"
 echo ""
-echo -e "  ${BOLD}Dashboard:${NC}  http://localhost:${WEBUI_PORT}"
-echo -e "  ${BOLD}Logs:${NC}       docker compose logs -f collector"
-echo -e "  ${BOLD}Stop:${NC}       docker compose down"
-echo -e "  ${BOLD}Wipe data:${NC}  docker compose down -v"
+echo -e "  ${BOLD}Dashboard:${NC}  http://$(hostname -I | awk '{print $1}'):${WEBUI_PORT}"
+echo -e "  ${BOLD}Logs:${NC}       ${DOCKER} compose -f ${INSTALL_DIR}/docker-compose.yml logs -f collector"
+echo -e "  ${BOLD}Stop:${NC}       ${DOCKER} compose -f ${INSTALL_DIR}/docker-compose.yml down"
+echo -e "  ${BOLD}Wipe data:${NC}  ${DOCKER} compose -f ${INSTALL_DIR}/docker-compose.yml down -v"
 echo ""
 echo -e "  ${YELLOW}Feeds begin collecting immediately. The dashboard updates every 30 seconds.${NC}"
 echo -e "  ${YELLOW}CISA KEV and ThreatFox data appear first (~1 minute).${NC}"
