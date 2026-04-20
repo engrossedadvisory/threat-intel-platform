@@ -9,7 +9,12 @@ from streamlit_autorefresh import st_autorefresh
 st.set_page_config(page_title="Threat Intel Platform", layout="wide", page_icon="🛡️")
 st_autorefresh(interval=30000, key="refresh")
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://intel_admin:change_me@db:5432/threat_intel")
+DATABASE_URL = os.getenv("DATABASE_URL") or (
+    f"postgresql://{os.getenv('POSTGRES_USER','intel_admin')}"
+    f":{os.getenv('POSTGRES_PASSWORD','change_me')}"
+    f"@{os.getenv('POSTGRES_HOST','db')}:5432"
+    f"/{os.getenv('POSTGRES_DB','threat_intel')}"
+)
 
 
 @st.cache_resource

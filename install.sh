@@ -78,6 +78,9 @@ if [ ! -f .env ]; then
     read -rsp "Gemini API key (https://aistudio.google.com/): " GEMINI_KEY; echo ""
     [ -n "$GEMINI_KEY" ] && sed -i.bak "s|^GEMINI_API_KEY=.*|GEMINI_API_KEY=${GEMINI_KEY}|" .env && rm -f .env.bak
 
+    read -rsp "Abuse.ch API key — covers ThreatFox/URLhaus/MalwareBazaar (https://auth.abuse.ch/): " ABUSECH_KEY; echo ""
+    [ -n "$ABUSECH_KEY" ] && sed -i.bak "s|^ABUSECH_API_KEY=.*|ABUSECH_API_KEY=${ABUSECH_KEY}|" .env && rm -f .env.bak
+
     read -rsp "AlienVault OTX API key (https://otx.alienvault.com/api): " OTX_KEY; echo ""
     [ -n "$OTX_KEY" ] && sed -i.bak "s|^OTX_API_KEY=.*|OTX_API_KEY=${OTX_KEY}|" .env && rm -f .env.bak
 
