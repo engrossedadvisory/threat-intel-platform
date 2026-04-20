@@ -6,14 +6,21 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
-DATABASE_URL = os.getenv("DATABASE_URL") or (
-    f"postgresql://{os.getenv('POSTGRES_USER','intel_admin')}"
-    f":{os.getenv('POSTGRES_PASSWORD','change_me')}"
-    f"@{os.getenv('POSTGRES_HOST','db')}:5432"
-    f"/{os.getenv('POSTGRES_DB','threat_intel')}"
-)
+from sqlalchemy.engine import URL as _URL
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+# Use URL.create() so passwords with special characters ($, !, @, etc.)
+# are passed safely without requiring percent-encoding in the env file.
+engine = create_engine(
+    _URL.create(
+        drivername="postgresql+psycopg2",
+        username=os.getenv("POSTGRES_USER", "intel_admin"),
+        password=os.getenv("POSTGRES_PASSWORD", "change_me"),
+        host=os.getenv("POSTGRES_HOST", "db"),
+        port=5432,
+        database=os.getenv("POSTGRES_DB", "threat_intel"),
+    ),
+    pool_pre_ping=True,
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 

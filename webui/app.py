@@ -9,17 +9,21 @@ from streamlit_autorefresh import st_autorefresh
 st.set_page_config(page_title="Threat Intel Platform", layout="wide", page_icon="🛡️")
 st_autorefresh(interval=30000, key="refresh")
 
-DATABASE_URL = os.getenv("DATABASE_URL") or (
-    f"postgresql://{os.getenv('POSTGRES_USER','intel_admin')}"
-    f":{os.getenv('POSTGRES_PASSWORD','change_me')}"
-    f"@{os.getenv('POSTGRES_HOST','db')}:5432"
-    f"/{os.getenv('POSTGRES_DB','threat_intel')}"
+from sqlalchemy.engine import URL as _URL
+
+_DB_URL = _URL.create(
+    drivername="postgresql+psycopg2",
+    username=os.getenv("POSTGRES_USER", "intel_admin"),
+    password=os.getenv("POSTGRES_PASSWORD", "change_me"),
+    host=os.getenv("POSTGRES_HOST", "db"),
+    port=5432,
+    database=os.getenv("POSTGRES_DB", "threat_intel"),
 )
 
 
 @st.cache_resource
 def get_engine():
-    return create_engine(DATABASE_URL, pool_pre_ping=True)
+    return create_engine(_DB_URL, pool_pre_ping=True)
 
 
 @st.cache_data(ttl=15)
