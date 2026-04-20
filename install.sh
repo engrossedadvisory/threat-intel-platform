@@ -20,6 +20,16 @@ echo ""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Returns the first free TCP port at or above $1
+find_free_port() {
+    local port="${1:-8501}"
+    while ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":${port}$" \
+       || lsof -iTCP:"${port}" -sTCP:LISTEN -t >/dev/null 2>&1; do
+        port=$(( port + 1 ))
+    done
+    echo "$port"
+}
+
 # ─── 1. Prerequisites ─────────────────────────────────────────────────────────
 header "1/5  Checking prerequisites"
 
@@ -103,6 +113,15 @@ fi
 # ─── 5. Build and launch ──────────────────────────────────────────────────────
 header "5/5  Building and launching containers"
 
+# Resolve a free port and persist it to .env so compose picks it up
+WEBUI_PORT=$(find_free_port 8501)
+if grep -q "^WEBUI_PORT=" .env 2>/dev/null; then
+    sed -i.bak "s|^WEBUI_PORT=.*|WEBUI_PORT=${WEBUI_PORT}|" .env && rm -f .env.bak
+else
+    echo "WEBUI_PORT=${WEBUI_PORT}" >> .env
+fi
+info "Dashboard will be served on port ${WEBUI_PORT}."
+
 info "Building Docker images (first build may take 2-3 minutes)…"
 docker compose build
 
@@ -117,7 +136,7 @@ echo ""
 
 ok "Platform is running!"
 echo ""
-echo -e "  ${BOLD}Dashboard:${NC}  http://localhost:8501"
+echo -e "  ${BOLD}Dashboard:${NC}  http://localhost:${WEBUI_PORT}"
 echo -e "  ${BOLD}Logs:${NC}       docker compose logs -f collector"
 echo -e "  ${BOLD}Stop:${NC}       docker compose down"
 echo -e "  ${BOLD}Wipe data:${NC}  docker compose down -v"

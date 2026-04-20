@@ -44,7 +44,7 @@ services:
   webui:
     build: ./webui
     ports:
-      - "8501:8501"
+      - "${WEBUI_PORT:-8501}:8501"
     depends_on:
       db:
         condition: service_healthy
