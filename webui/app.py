@@ -6,8 +6,8 @@ import streamlit as st
 from sqlalchemy import create_engine
 from streamlit_autorefresh import st_autorefresh
 
-st_autorefresh(interval=30000, key="refresh")
 st.set_page_config(page_title="Threat Intel Platform", layout="wide", page_icon="🛡️")
+st_autorefresh(interval=30000, key="refresh")
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://intel_admin:change_me@db:5432/threat_intel")
 
