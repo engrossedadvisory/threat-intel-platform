@@ -79,4 +79,27 @@ class FeedStatus(Base):
     error_message = Column(Text)
 
 
+class MITRETechnique(Base):
+    __tablename__ = "mitre_techniques"
+    id = Column(Integer, primary_key=True, index=True)
+    technique_id = Column(String(20), unique=True, index=True)  # T1566.001
+    stix_id = Column(String(100), unique=True)
+    name = Column(String(255))
+    tactic = Column(String(500))    # comma-separated tactic names
+    description = Column(Text)
+    mitigations = relationship(
+        "MITREMitigation", back_populates="technique", cascade="all, delete-orphan"
+    )
+
+
+class MITREMitigation(Base):
+    __tablename__ = "mitre_mitigations"
+    id = Column(Integer, primary_key=True, index=True)
+    technique_fk = Column(Integer, ForeignKey("mitre_techniques.id"), index=True)
+    mitigation_id = Column(String(20))   # M1234
+    name = Column(String(255))
+    description = Column(Text)
+    technique = relationship("MITRETechnique", back_populates="mitigations")
+
+
 Base.metadata.create_all(bind=engine)

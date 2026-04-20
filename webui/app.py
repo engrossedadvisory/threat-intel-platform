@@ -1,9 +1,10 @@
+import json
 import os
 from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(page_title="Threat Intel Platform", layout="wide", page_icon="🛡️")
@@ -44,6 +45,28 @@ def load_data():
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
 
+@st.cache_data(ttl=60)
+def load_attack_data():
+    engine = get_engine()
+    try:
+        techniques = pd.read_sql(
+            "SELECT * FROM mitre_techniques ORDER BY technique_id", engine
+        )
+        mitigations = pd.read_sql(
+            """
+            SELECT mm.mitigation_id, mm.name, mm.description,
+                   mt.technique_id, mt.name AS tech_name, mt.tactic
+            FROM mitre_mitigations mm
+            JOIN mitre_techniques mt ON mm.technique_fk = mt.id
+            ORDER BY mt.technique_id, mm.mitigation_id
+            """,
+            engine,
+        )
+        return techniques, mitigations
+    except Exception:
+        return pd.DataFrame(), pd.DataFrame()
+
+
 # ─── Header ───────────────────────────────────────────────────────────────────
 st.title("🛡️ Threat Intelligence Platform")
 st.caption(
@@ -72,8 +95,8 @@ with c5:
 st.divider()
 
 # ─── Tabs ─────────────────────────────────────────────────────────────────────
-tab_feed, tab_iocs, tab_cves, tab_health = st.tabs(
-    ["🚨 Threat Feed", "🔍 IOC Search", "⚠️ CVE Tracker", "📊 Feed Health"]
+tab_feed, tab_iocs, tab_cves, tab_attack, tab_health = st.tabs(
+    ["🚨 Threat Feed", "🔍 IOC Search", "⚠️ CVE Tracker", "🗺️ ATT&CK Mapping", "📊 Feed Health"]
 )
 
 
@@ -201,6 +224,158 @@ with tab_cves:
 
         csv = filtered_cves[display_cols].to_csv(index=False).encode()
         st.download_button("⬇ Export CVEs as CSV", csv, "cves_export.csv", "text/csv")
+
+
+# ── ATT&CK Mapping & Remediation ─────────────────────────────────────────────
+with tab_attack:
+    st.subheader("MITRE ATT&CK Mapping & Remediation")
+
+    techniques_df, mitigations_df = load_attack_data()
+
+    if techniques_df.empty:
+        st.info(
+            "ATT&CK data not yet loaded — the collector populates this on its first "
+            "MITRE ATT&CK cycle (runs once every 24 h). Check back shortly."
+        )
+    else:
+        # ── Build TTP usage map from threat reports ────────────────────────────
+        ttp_usage: dict = {}   # technique_id -> {count, actors}
+        for _, row in reports.iterrows():
+            raw_ttps = row.get("ttps") or []
+            if isinstance(raw_ttps, str):
+                try:
+                    raw_ttps = json.loads(raw_ttps)
+                except Exception:
+                    raw_ttps = []
+            actor = str(row.get("threat_actor") or "Unknown")
+            for ttp in (raw_ttps or []):
+                entry = ttp_usage.setdefault(ttp, {"count": 0, "actors": set()})
+                entry["count"] += 1
+                entry["actors"].add(actor)
+
+        observed_ids = set(ttp_usage.keys())
+        observed_techniques = techniques_df[techniques_df["technique_id"].isin(observed_ids)].copy()
+
+        # ── Top metrics ───────────────────────────────────────────────────────
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            st.metric("Techniques in DB", len(techniques_df))
+        with m2:
+            st.metric("Observed in Threats", len(observed_techniques))
+        with m3:
+            unique_tactics = set(
+                t.strip()
+                for tactic_str in observed_techniques["tactic"].dropna()
+                for t in tactic_str.split(",")
+                if t.strip()
+            )
+            st.metric("Tactics Covered", len(unique_tactics))
+        with m4:
+            st.metric("Mitigations Available", len(mitigations_df))
+
+        st.divider()
+
+        # ── Tactic distribution chart ──────────────────────────────────────────
+        if not observed_techniques.empty:
+            st.markdown("#### Threat Activity by ATT&CK Tactic")
+            tactic_counts: dict = {}
+            for _, row in observed_techniques.iterrows():
+                tid = row["technique_id"]
+                count = ttp_usage.get(tid, {}).get("count", 0)
+                for tactic in str(row.get("tactic") or "Unknown").split(","):
+                    tactic = tactic.strip() or "Unknown"
+                    tactic_counts[tactic] = tactic_counts.get(tactic, 0) + count
+
+            tactic_df = (
+                pd.DataFrame(list(tactic_counts.items()), columns=["Tactic", "Threat Count"])
+                .sort_values("Threat Count", ascending=False)
+            )
+            st.bar_chart(tactic_df.set_index("Tactic"))
+            st.divider()
+
+        # ── Observed techniques with remediation drill-down ───────────────────
+        st.markdown("#### Techniques Observed in Threat Reports")
+        if observed_techniques.empty:
+            st.info(
+                "No ATT&CK TTPs extracted yet. TTPs are populated by the AI analyzer "
+                "when processing OTX pulses or other enriched feeds."
+            )
+        else:
+            observed_techniques["threat_count"] = observed_techniques["technique_id"].map(
+                lambda tid: ttp_usage.get(tid, {}).get("count", 0)
+            )
+            observed_techniques["actors"] = observed_techniques["technique_id"].map(
+                lambda tid: ", ".join(sorted(ttp_usage.get(tid, {}).get("actors", set())))
+            )
+            observed_techniques = observed_techniques.sort_values("threat_count", ascending=False)
+
+            for _, tech in observed_techniques.iterrows():
+                tid = tech["technique_id"]
+                label = (
+                    f"**{tid}** — {tech['name']}  |  "
+                    f"Tactic: {tech.get('tactic','?')}  |  "
+                    f"Seen in {tech['threat_count']} report(s)"
+                )
+                with st.expander(label):
+                    col_l, col_r = st.columns([2, 3])
+                    with col_l:
+                        st.markdown(f"**Actors:** {tech['actors'] or 'Unknown'}")
+                        desc = str(tech.get("description") or "")
+                        st.markdown(f"**Description:** {desc[:600]}{'…' if len(desc) > 600 else ''}")
+                        st.markdown(
+                            f"[View on MITRE ATT&CK](https://attack.mitre.org/techniques/{tid.replace('.', '/')})",
+                        )
+                    with col_r:
+                        tech_mits = mitigations_df[mitigations_df["technique_id"] == tid]
+                        if tech_mits.empty:
+                            st.info("No specific mitigations mapped for this technique.")
+                        else:
+                            st.markdown(f"**{len(tech_mits)} MITRE Mitigation(s):**")
+                            for _, mit in tech_mits.iterrows():
+                                with st.container():
+                                    st.markdown(f"🛡️ `{mit['mitigation_id']}` **{mit['name']}**")
+                                    mit_desc = str(mit.get("description") or "")
+                                    st.caption(
+                                        mit_desc[:400] + ("…" if len(mit_desc) > 400 else "")
+                                    )
+
+        st.divider()
+
+        # ── Full remediation reference lookup ─────────────────────────────────
+        st.markdown("#### Full Remediation Reference")
+        all_tech_options = [
+            f"{row['technique_id']} — {row['name']}"
+            for _, row in techniques_df.iterrows()
+        ]
+        selected = st.selectbox(
+            "Look up any technique",
+            options=["— select —"] + all_tech_options,
+            key="attack_lookup",
+        )
+        if selected and selected != "— select —":
+            sel_id = selected.split(" — ")[0]
+            tech_row = techniques_df[techniques_df["technique_id"] == sel_id]
+            if not tech_row.empty:
+                t = tech_row.iloc[0]
+                st.markdown(f"### {t['technique_id']} — {t['name']}")
+                st.markdown(f"**Tactic(s):** {t.get('tactic','Unknown')}")
+                st.markdown("**Description:**")
+                st.markdown(str(t.get("description") or "No description available."))
+                st.markdown(
+                    f"[🔗 MITRE ATT&CK Reference](https://attack.mitre.org/techniques/{sel_id.replace('.', '/')})"
+                )
+                st.divider()
+                tech_mits = mitigations_df[mitigations_df["technique_id"] == sel_id]
+                if tech_mits.empty:
+                    st.info("No mitigations mapped for this technique in the current ATT&CK dataset.")
+                else:
+                    st.markdown(f"#### Recommended Mitigations ({len(tech_mits)})")
+                    for _, mit in tech_mits.iterrows():
+                        with st.expander(f"🛡️ `{mit['mitigation_id']}` {mit['name']}"):
+                            st.markdown(str(mit.get("description") or ""))
+                            st.markdown(
+                                f"[View mitigation on MITRE ATT&CK](https://attack.mitre.org/mitigations/{mit['mitigation_id']})"
+                            )
 
 
 # ── Feed Health ───────────────────────────────────────────────────────────────

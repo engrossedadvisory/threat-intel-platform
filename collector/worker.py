@@ -2,7 +2,7 @@ import time
 import logging
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
-from models import SessionLocal, ThreatReport, IOC, CVERecord, FeedStatus
+from models import SessionLocal, ThreatReport, IOC, CVERecord, FeedStatus, MITRETechnique, MITREMitigation
 from feeds import ALL_FEEDS
 from analyzer import analyze
 
@@ -164,9 +164,84 @@ def _process_nvd(db: Session, items: list) -> int:
 
 
 def _process_mitre_attack(db: Session, items: list) -> int:
-    # Reference data only — log technique count, no DB persistence needed
-    log.info(f"  [mitre_attack] Reference loaded: {len(items)} active techniques")
-    return 0
+    techniques: dict = {}       # stix_id -> object
+    course_of_actions: dict = {}  # stix_id -> object
+    relationships: list = []
+
+    for obj in items:
+        t = obj.get("type")
+        if t == "attack-pattern":
+            techniques[obj["id"]] = obj
+        elif t == "course-of-action":
+            course_of_actions[obj["id"]] = obj
+        elif t == "relationship" and obj.get("relationship_type") == "mitigates":
+            relationships.append(obj)
+
+    # ── Persist techniques ────────────────────────────────────────────────────
+    saved = 0
+    stix_to_db_id: dict = {}   # stix_id -> mitre_techniques.id
+
+    for stix_id, tech in techniques.items():
+        tech_id = next(
+            (r["external_id"] for r in tech.get("external_references", [])
+             if r.get("source_name") == "mitre-attack"),
+            None,
+        )
+        if not tech_id:
+            continue
+
+        existing = db.query(MITRETechnique).filter_by(technique_id=tech_id).first()
+        if existing:
+            stix_to_db_id[stix_id] = existing.id
+            continue
+
+        tactics = ", ".join(
+            p["phase_name"].replace("-", " ").title()
+            for p in tech.get("kill_chain_phases", [])
+            if p.get("kill_chain_name") == "mitre-attack"
+        )
+        row = MITRETechnique(
+            technique_id=tech_id,
+            stix_id=stix_id,
+            name=tech.get("name", ""),
+            tactic=tactics,
+            description=(tech.get("description") or "")[:3000],
+        )
+        db.add(row)
+        db.flush()
+        stix_to_db_id[stix_id] = row.id
+        saved += 1
+
+    db.commit()
+
+    # ── Persist mitigations via relationship objects ───────────────────────────
+    for rel in relationships:
+        source = rel.get("source_ref")   # course-of-action stix id
+        target = rel.get("target_ref")   # attack-pattern stix id
+        db_tech_id = stix_to_db_id.get(target)
+        if not db_tech_id or source not in course_of_actions:
+            continue
+
+        mit_obj = course_of_actions[source]
+        mit_id = next(
+            (r["external_id"] for r in mit_obj.get("external_references", [])
+             if r.get("source_name") == "mitre-attack"),
+            "M0000",
+        )
+        exists = db.query(MITREMitigation).filter_by(
+            technique_fk=db_tech_id, mitigation_id=mit_id
+        ).first()
+        if not exists:
+            db.add(MITREMitigation(
+                technique_fk=db_tech_id,
+                mitigation_id=mit_id,
+                name=mit_obj.get("name", ""),
+                description=(mit_obj.get("description") or "")[:3000],
+            ))
+
+    db.commit()
+    log.info(f"  [mitre_attack] {saved} new techniques stored, {len(relationships)} relationships processed")
+    return saved
 
 
 def _process_otx(db: Session, items: list) -> int:
