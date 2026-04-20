@@ -23,9 +23,8 @@ INSTALL_DIR="/opt/threat-intel-platform"
 # ─── Relocate to /opt if not already there ────────────────────────────────────
 if [ "$SCRIPT_DIR" != "$INSTALL_DIR" ]; then
     info "Copying project to ${INSTALL_DIR}..."
-    sudo mkdir -p "$INSTALL_DIR"
-    sudo cp -r "$SCRIPT_DIR"/. "$INSTALL_DIR"/
-    sudo chown -R "$(id -un)" "$INSTALL_DIR"
+    mkdir -p "$INSTALL_DIR"
+    cp -r "$SCRIPT_DIR"/. "$INSTALL_DIR"/
     ok "Project installed to ${INSTALL_DIR}."
     SCRIPT_DIR="$INSTALL_DIR"
 fi
@@ -45,26 +44,12 @@ find_free_port() {
 # ─── 1. Prerequisites ─────────────────────────────────────────────────────────
 header "1/5  Checking prerequisites"
 
+[ "$(id -u)" -eq 0 ] || die "Run this script with sudo: sudo ./install.sh"
 command -v docker >/dev/null 2>&1 || die "Docker not found. Install from https://docs.docker.com/get-docker/"
 command -v git    >/dev/null 2>&1 || die "git not found. Install git and re-run."
+docker info >/dev/null 2>&1       || die "Docker daemon is not running. Run: systemctl start docker"
+docker compose version >/dev/null 2>&1 || die "Docker Compose v2 not found. Run: apt install docker-compose-plugin"
 ok "Docker and git are available."
-
-# Detect whether docker needs sudo (socket permission check)
-DOCKER="docker"
-if ! docker info >/dev/null 2>&1; then
-    if sudo docker info >/dev/null 2>&1; then
-        DOCKER="sudo docker"
-        warn "Current user cannot access the Docker socket directly — using sudo for all Docker commands."
-        warn "To fix permanently: sudo usermod -aG docker $(id -un) && newgrp docker"
-    else
-        die "Docker daemon is not running or is not accessible. Run: sudo systemctl start docker"
-    fi
-fi
-ok "Docker daemon is reachable (using: ${DOCKER})."
-
-# Verify Compose v2 is available under the resolved docker command
-$DOCKER compose version >/dev/null 2>&1 || die "Docker Compose v2 not found. Run: sudo apt install docker-compose-plugin"
-ok "Docker Compose v2 confirmed."
 
 # ─── 2. Environment file ──────────────────────────────────────────────────────
 header "2/5  Configuring environment"
@@ -143,22 +128,22 @@ fi
 info "Dashboard will be served on port ${WEBUI_PORT}."
 
 info "Building Docker images (first build may take 2-3 minutes)…"
-$DOCKER compose build
+docker compose build
 
 info "Starting services in the background…"
-$DOCKER compose up -d
+docker compose up -d
 
 sleep 3
 echo ""
-$DOCKER compose ps
+docker compose ps
 echo ""
 
 ok "Platform is running!"
 echo ""
 echo -e "  ${BOLD}Dashboard:${NC}  http://$(hostname -I | awk '{print $1}'):${WEBUI_PORT}"
-echo -e "  ${BOLD}Logs:${NC}       ${DOCKER} compose -f ${INSTALL_DIR}/docker-compose.yml logs -f collector"
-echo -e "  ${BOLD}Stop:${NC}       ${DOCKER} compose -f ${INSTALL_DIR}/docker-compose.yml down"
-echo -e "  ${BOLD}Wipe data:${NC}  ${DOCKER} compose -f ${INSTALL_DIR}/docker-compose.yml down -v"
+echo -e "  ${BOLD}Logs:${NC}       docker compose -f ${INSTALL_DIR}/docker-compose.yml logs -f collector"
+echo -e "  ${BOLD}Stop:${NC}       docker compose -f ${INSTALL_DIR}/docker-compose.yml down"
+echo -e "  ${BOLD}Wipe data:${NC}  docker compose -f ${INSTALL_DIR}/docker-compose.yml down -v"
 echo ""
 echo -e "  ${YELLOW}Feeds begin collecting immediately. The dashboard updates every 30 seconds.${NC}"
 echo -e "  ${YELLOW}CISA KEV and ThreatFox data appear first (~1 minute).${NC}"
