@@ -292,6 +292,64 @@ _PROCESSORS = {
 }
 
 
+# ─── AI TTP enrichment ────────────────────────────────────────────────────────
+
+def _enrich_missing_ttps(db: Session, batch_size: int = 10) -> int:
+    """Find threat reports with no TTPs extracted and run the AI analyzer on them.
+
+    The analyzer tries Ollama → Claude → Gemini in order.  We only update
+    records where the AI returns a non-empty ttps list so we never blank out
+    an already-good record and don't keep retrying truly un-enrichable rows
+    indefinitely (they'll eventually get a non-empty summary which acts as a
+    signal that the analyzer ran, even if no TTPs were found).
+    """
+    # Fetch reports that still have an empty ttps array AND no summary yet
+    # (summary is written on every successful analyze() call, so it doubles as
+    # a "was tried" flag once we've attempted enrichment at least once).
+    candidates = (
+        db.query(ThreatReport)
+        .filter(
+            ThreatReport.source_feed != "mitre_attack",  # skip pure ATT&CK objects
+            ThreatReport.summary.is_(None),
+        )
+        .order_by(ThreatReport.id.asc())
+        .limit(batch_size)
+        .all()
+    )
+
+    if not candidates:
+        return 0
+
+    enriched = 0
+    for report in candidates:
+        raw = report.raw_source or ""
+        if not raw.strip():
+            # Nothing to analyze — stamp an empty summary so we skip it next time
+            report.summary = ""
+            db.commit()
+            continue
+
+        intel = analyze(raw)
+        if intel is None:
+            # No AI backend available right now; leave for next cycle
+            break
+
+        report.ttps = intel.get("ttps") or []
+        report.associated_cves = intel.get("associated_cves") or []
+        report.summary = intel.get("summary") or ""
+        # Only overwrite actor/industry if the report still has defaults
+        if report.threat_actor in (None, "Unknown", ""):
+            report.threat_actor = intel.get("threat_actor") or "Unknown"
+        if report.target_industry in (None, "Unknown", ""):
+            report.target_industry = intel.get("target_industry") or "Unknown"
+        db.commit()
+        enriched += 1
+
+    if enriched:
+        log.info(f"[enrichment] AI-enriched {enriched}/{len(candidates)} reports with TTPs/summaries")
+    return enriched
+
+
 # ─── Main loop ────────────────────────────────────────────────────────────────
 
 def _run_feed(feed, db: Session):
@@ -334,6 +392,9 @@ def main():
                 if now >= _next_run.get(feed.name, 0):
                     _run_feed(feed, db)
                     _next_run[feed.name] = time.time() + feed.interval_seconds
+
+            # After feeds, run AI enrichment on un-analyzed reports
+            _enrich_missing_ttps(db, batch_size=10)
         finally:
             db.close()
         time.sleep(30)

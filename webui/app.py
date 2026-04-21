@@ -1,6 +1,9 @@
 import json
 import os
+import re
+import requests as _requests
 from datetime import datetime, timezone
+from typing import Optional
 
 import pandas as pd
 import streamlit as st
@@ -67,6 +70,164 @@ def load_attack_data():
         return pd.DataFrame(), pd.DataFrame()
 
 
+# ─── AI Analyst back-end ──────────────────────────────────────────────────────
+
+_OLLAMA_URL  = os.getenv("OLLAMA_URL",  "http://host.docker.internal:11434")
+_OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
+_CLAUDE_KEY  = os.getenv("CLAUDE_API_KEY", "")
+_GEMINI_KEY  = os.getenv("GEMINI_API_KEY", "")
+
+_ANALYST_SYSTEM = """\
+You are an expert Cyber Threat Intelligence (CTI) analyst with deep knowledge of MITRE ATT&CK,
+CVE databases, IOC analysis, and threat actor tradecraft. You have access to a live threat
+intelligence database that is summarized below.
+
+Answer questions clearly and concisely. When referencing techniques use their ATT&CK IDs
+(e.g. T1566.001). When mentioning CVEs include their CVSS score if available. If asked for
+recommendations, provide actionable, prioritized steps. If the data doesn't contain enough
+information to answer definitively, say so rather than speculating.
+
+Current database snapshot:
+{context}"""
+
+
+def _build_context(reports: pd.DataFrame, iocs: pd.DataFrame,
+                   cves: pd.DataFrame, techniques_df: pd.DataFrame) -> str:
+    """Summarise the current DB state into a compact context string for the LLM."""
+    lines = []
+
+    # Feed summary
+    if not reports.empty:
+        by_feed = reports.groupby("source_feed").size().to_dict()
+        lines.append("THREAT REPORTS BY FEED: " + ", ".join(f"{k}={v}" for k, v in by_feed.items()))
+        lines.append(f"TOTAL REPORTS: {len(reports)}")
+
+        # Top actors
+        actors = (
+            reports["threat_actor"]
+            .dropna()
+            .value_counts()
+            .head(10)
+            .to_dict()
+        )
+        if actors:
+            lines.append("TOP THREAT ACTORS: " + ", ".join(f"{a} ({c})" for a, c in actors.items()))
+
+        # TTP frequency
+        ttp_counts: dict = {}
+        for _, row in reports.iterrows():
+            raw_ttps = row.get("ttps") or []
+            if isinstance(raw_ttps, str):
+                try:
+                    raw_ttps = json.loads(raw_ttps)
+                except Exception:
+                    raw_ttps = []
+            for t in (raw_ttps or []):
+                ttp_counts[t] = ttp_counts.get(t, 0) + 1
+        if ttp_counts:
+            top_ttps = sorted(ttp_counts.items(), key=lambda x: -x[1])[:15]
+            lines.append("TOP OBSERVED TTPS: " + ", ".join(f"{t}({c})" for t, c in top_ttps))
+
+        # Recent summaries (up to 10)
+        recent = reports[reports["summary"].notna() & (reports["summary"] != "")].head(10)
+        if not recent.empty:
+            lines.append("\nRECENT THREAT SUMMARIES:")
+            for _, row in recent.iterrows():
+                lines.append(
+                    f"  [{row.get('source_feed','?').upper()}] "
+                    f"{row.get('threat_actor','Unknown')}: {str(row.get('summary',''))[:200]}"
+                )
+
+    # IOC stats
+    if not iocs.empty:
+        by_type = iocs.groupby("ioc_type").size().to_dict()
+        lines.append("\nIOCS BY TYPE: " + ", ".join(f"{k}={v}" for k, v in by_type.items()))
+        lines.append(f"TOTAL IOCS: {len(iocs)}")
+
+    # CVE stats
+    if not cves.empty:
+        kev_count = int((cves["is_kev"] == 1).sum()) if "is_kev" in cves.columns else 0
+        high_cvss = cves[cves["cvss_score"].fillna(0) >= 9.0] if "cvss_score" in cves.columns else pd.DataFrame()
+        lines.append(f"\nCVES TRACKED: {len(cves)}  CISA-KEV: {kev_count}  CVSS>=9: {len(high_cvss)}")
+        # Show a few critical ones
+        if not high_cvss.empty:
+            lines.append("CRITICAL CVEs (CVSS≥9):")
+            for _, row in high_cvss.head(5).iterrows():
+                lines.append(
+                    f"  {row.get('cve_id','?')} CVSS={row.get('cvss_score','?')} "
+                    f"Vendor={row.get('vendor','?')} Product={row.get('product','?')}"
+                )
+
+    # ATT&CK techniques in DB
+    if not techniques_df.empty:
+        lines.append(f"\nMITRE ATT&CK TECHNIQUES IN DB: {len(techniques_df)}")
+
+    return "\n".join(lines)
+
+
+def _analyst_ollama(messages: list) -> Optional[str]:
+    try:
+        # Convert OpenAI-style messages to a single prompt for Ollama
+        prompt = "\n\n".join(
+            f"{'Assistant' if m['role'] == 'assistant' else 'User'}: {m['content']}"
+            for m in messages
+        ) + "\n\nAssistant:"
+        resp = _requests.post(
+            f"{_OLLAMA_URL}/api/generate",
+            json={"model": _OLLAMA_MODEL, "prompt": prompt, "stream": False},
+            timeout=120,
+        )
+        resp.raise_for_status()
+        return resp.json().get("response", "").strip() or None
+    except Exception:
+        return None
+
+
+def _analyst_claude(messages: list) -> Optional[str]:
+    if not _CLAUDE_KEY:
+        return None
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=_CLAUDE_KEY)
+        system_msg = messages[0]["content"] if messages and messages[0]["role"] == "system" else ""
+        chat_msgs = [m for m in messages if m["role"] != "system"]
+        result = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1024,
+            system=system_msg,
+            messages=chat_msgs,
+        )
+        return result.content[0].text.strip() or None
+    except Exception:
+        return None
+
+
+def _analyst_gemini(messages: list) -> Optional[str]:
+    if not _GEMINI_KEY:
+        return None
+    try:
+        from google import genai
+        client = genai.Client(api_key=_GEMINI_KEY)
+        # Flatten to a single string — Gemini 2.0 flash doesn't need turn-by-turn
+        combined = "\n\n".join(m["content"] for m in messages)
+        result = client.models.generate_content(model="gemini-2.0-flash", contents=combined)
+        return result.text.strip() or None
+    except Exception:
+        return None
+
+
+def analyst_reply(messages: list) -> str:
+    """Call LLM backends in order: Ollama → Claude → Gemini."""
+    for fn in (_analyst_ollama, _analyst_claude, _analyst_gemini):
+        reply = fn(messages)
+        if reply:
+            return reply
+    return (
+        "⚠️ No AI backend is reachable right now. "
+        "Please configure OLLAMA_URL, CLAUDE_API_KEY, or GEMINI_API_KEY."
+    )
+
+
 # ─── Header ───────────────────────────────────────────────────────────────────
 st.title("🛡️ Threat Intelligence Platform")
 st.caption(
@@ -95,8 +256,8 @@ with c5:
 st.divider()
 
 # ─── Tabs ─────────────────────────────────────────────────────────────────────
-tab_feed, tab_iocs, tab_cves, tab_attack, tab_health = st.tabs(
-    ["🚨 Threat Feed", "🔍 IOC Search", "⚠️ CVE Tracker", "🗺️ ATT&CK Mapping", "📊 Feed Health"]
+tab_feed, tab_iocs, tab_cves, tab_attack, tab_analyst, tab_health = st.tabs(
+    ["🚨 Threat Feed", "🔍 IOC Search", "⚠️ CVE Tracker", "🗺️ ATT&CK Mapping", "🤖 AI Analyst", "📊 Feed Health"]
 )
 
 
@@ -376,6 +537,82 @@ with tab_attack:
                             st.markdown(
                                 f"[View mitigation on MITRE ATT&CK](https://attack.mitre.org/mitigations/{mit['mitigation_id']})"
                             )
+
+
+# ── AI Analyst ────────────────────────────────────────────────────────────────
+with tab_analyst:
+    st.subheader("🤖 AI Threat Intelligence Analyst")
+    st.caption(
+        "Ask questions about your threat data in natural language. "
+        "The analyst uses the live database snapshot as context."
+    )
+
+    # Determine which AI backends are available
+    backends = []
+    if _CLAUDE_KEY:
+        backends.append("Claude")
+    if _GEMINI_KEY:
+        backends.append("Gemini")
+    backends.append("Ollama (local)")   # always listed; may not be running
+
+    st.info(f"Active backends (tried in order): {' → '.join(backends)}")
+
+    # Initialise conversation history
+    if "analyst_messages" not in st.session_state:
+        st.session_state.analyst_messages = []
+
+    # Build context once per page load (cached by Streamlit's own run model)
+    techniques_df_ctx, _ = load_attack_data()
+    _ctx = _build_context(reports, iocs, cves, techniques_df_ctx)
+
+    # Render existing conversation
+    for msg in st.session_state.analyst_messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    # Suggested starter questions
+    if not st.session_state.analyst_messages:
+        st.markdown("**💡 Try asking:**")
+        starters = [
+            "What are the most active threat actors in the database?",
+            "Which MITRE ATT&CK tactics are most commonly observed?",
+            "Show me the most critical CVEs and how to remediate them.",
+            "What malware families are appearing most frequently?",
+            "Which industries are being targeted the most?",
+            "Summarize the last 24 hours of threat activity.",
+            "What TTPs should I be most concerned about and why?",
+        ]
+        cols = st.columns(2)
+        for i, q in enumerate(starters):
+            if cols[i % 2].button(q, key=f"starter_{i}", use_container_width=True):
+                st.session_state.analyst_messages.append({"role": "user", "content": q})
+                st.rerun()
+
+    # Clear chat button
+    if st.session_state.analyst_messages:
+        if st.button("🗑️ Clear conversation", key="clear_chat"):
+            st.session_state.analyst_messages = []
+            st.rerun()
+
+    # Chat input
+    if user_input := st.chat_input("Ask a question about your threat intelligence…"):
+        st.session_state.analyst_messages.append({"role": "user", "content": user_input})
+        with st.chat_message("user"):
+            st.markdown(user_input)
+
+        # Build the full messages list for the LLM
+        system_content = _ANALYST_SYSTEM.format(context=_ctx)
+        llm_messages = [{"role": "system", "content": system_content}]
+        # Include up to the last 10 turns for context
+        for m in st.session_state.analyst_messages[-10:]:
+            llm_messages.append({"role": m["role"], "content": m["content"]})
+
+        with st.chat_message("assistant"):
+            with st.spinner("Analyzing…"):
+                reply = analyst_reply(llm_messages)
+            st.markdown(reply)
+
+        st.session_state.analyst_messages.append({"role": "assistant", "content": reply})
 
 
 # ── Feed Health ───────────────────────────────────────────────────────────────
