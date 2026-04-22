@@ -15,7 +15,7 @@ from streamlit_autorefresh import st_autorefresh
 st.set_page_config(
     page_title="ThreatIntel Platform",
     layout="wide",
-    page_icon="🛡️",
+    page_icon="⬡",
     initial_sidebar_state="collapsed",
 )
 st_autorefresh(interval=30000, key="refresh")
@@ -26,6 +26,7 @@ from sqlalchemy.engine import URL as _URL
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css');
 
 /* ── Reset & base ───────────────────────────────────────────────────────── */
 html, body, [class*="css"]  { font-family: 'Inter', sans-serif; }
@@ -234,11 +235,11 @@ hr { border: none !important; border-top: 1px solid #0f2040 !important; margin: 
 .feed-meta { font-size: 0.73rem; color: #3d5a80; flex: 1; }
 .feed-count { font-size: 0.78rem; font-weight: 600; color: #38bdf8; font-family: 'JetBrains Mono', monospace; min-width: 80px; text-align: right; }
 .feed-error { font-size: 0.72rem; color: #ff8060; margin-top: 3px; }
-.status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.status-dot.ok      { background: #06d6a0; box-shadow: 0 0 6px rgba(6,214,160,0.6); animation: pulse-green 2s infinite; }
-.status-dot.error   { background: #ff4d6d; box-shadow: 0 0 6px rgba(255,77,109,0.6); }
-.status-dot.running { background: #38bdf8; box-shadow: 0 0 6px rgba(56,189,248,0.6); animation: pulse-blue 1.2s infinite; }
-.status-dot.pending { background: #ffd166; }
+.status-icon { font-size: 0.85rem; flex-shrink: 0; line-height: 1; }
+.status-icon.ok      { color: #06d6a0; filter: drop-shadow(0 0 4px rgba(6,214,160,0.7)); animation: pulse-green 2s infinite; }
+.status-icon.error   { color: #ff4d6d; filter: drop-shadow(0 0 4px rgba(255,77,109,0.6)); }
+.status-icon.running { color: #38bdf8; filter: drop-shadow(0 0 4px rgba(56,189,248,0.6)); animation: pulse-blue 1.2s infinite; }
+.status-icon.pending { color: #ffd166; }
 @keyframes pulse-blue {
     0%, 100% { box-shadow: 0 0 0 0 rgba(56,189,248,0.7); }
     50%       { box-shadow: 0 0 0 5px rgba(56,189,248,0); }
@@ -272,6 +273,19 @@ hr { border: none !important; border-top: 1px solid #0f2040 !important; margin: 
 
 /* ── Critical glow on metric values ────────────────────────────────────── */
 .metric-glow { color: #ff4d6d !important; text-shadow: 0 0 20px rgba(255,77,109,0.5); }
+
+/* ── Bootstrap Icons sizing ─────────────────────────────────────────────── */
+.bi { line-height: 1; vertical-align: -0.125em; }
+.bi-sm  { font-size: 0.85rem; }
+.bi-md  { font-size: 1.1rem; }
+.bi-lg  { font-size: 1.4rem; }
+.icon-ok      { color: #06d6a0; }
+.icon-error   { color: #ff4d6d; }
+.icon-running { color: #38bdf8; }
+.icon-pending { color: #ffd166; }
+.icon-accent  { color: #38bdf8; }
+.icon-muted   { color: #3d5a80; }
+.icon-purple  { color: #b48ef5; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -616,9 +630,9 @@ st.divider()
 # ─── Tabs ─────────────────────────────────────────────────────────────────────
 (tab_dash, tab_feed, tab_actors, tab_iocs,
  tab_cves, tab_attack, tab_analyst, tab_health) = st.tabs([
-    "📊 Dashboard", "🚨 Threat Feed", "👤 Threat Actors",
-    "🔍 IOC Hunt", "⚠️ CVE Tracker",
-    "🗺️ ATT&CK Mapping", "🤖 AI Analyst", "📡 Feed Health",
+    "◈  Dashboard", "◉  Threat Feed", "⬡  Actors",
+    "⊙  IOC Hunt",  "◆  CVE Tracker",
+    "⬢  ATT&CK",    "⊕  AI Analyst",  "◎  Feed Health",
 ])
 
 
@@ -626,7 +640,7 @@ st.divider()
 # DASHBOARD
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_dash:
-    st.subheader("Executive Overview")
+    st.markdown('<p class="section-label"><i class="bi bi-grid-3x3-gap-fill bi-sm"></i>&nbsp; Executive Overview</p>', unsafe_allow_html=True)
 
     if reports.empty:
         st.info("Collector is initialising feeds — check back in a few minutes.")
@@ -755,7 +769,7 @@ with tab_dash:
 # THREAT FEED
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_feed:
-    st.subheader("Active Threat Reports")
+    st.markdown('<p class="section-label"><i class="bi bi-lightning-fill bi-sm icon-error"></i>&nbsp; Active Threat Reports</p>', unsafe_allow_html=True)
 
     if reports.empty:
         st.info("Collector is initialising feeds — check back in a few minutes.")
@@ -824,7 +838,7 @@ with tab_feed:
 # THREAT ACTORS
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_actors:
-    st.subheader("Threat Actor Profiles")
+    st.markdown('<p class="section-label"><i class="bi bi-person-badge-fill bi-sm icon-accent"></i>&nbsp; Threat Actor Profiles</p>', unsafe_allow_html=True)
 
     if reports.empty:
         st.info("No threat data yet.")
@@ -917,14 +931,14 @@ with tab_actors:
 # IOC HUNT
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_iocs:
-    st.subheader("IOC Hunt & Enrichment")
+    st.markdown('<p class="section-label"><i class="bi bi-search bi-sm icon-accent"></i>&nbsp; IOC Hunt &amp; Enrichment</p>', unsafe_allow_html=True)
 
     if iocs.empty:
         st.info("No IOCs collected yet.")
     else:
         sc1, sc2, sc3 = st.columns([3, 2, 1])
         with sc1:
-            search = st.text_input("🔍  Search IP, domain, hash, URL…", key="ioc_search")
+            search = st.text_input("Search IP, domain, hash, URL…", key="ioc_search")
         with sc2:
             ioc_types = sorted(iocs["ioc_type"].dropna().unique().tolist())
             type_filter = st.multiselect("IOC Type", options=ioc_types, key="ioc_type_f")
@@ -952,21 +966,21 @@ with tab_iocs:
                     f'<span class="badge-info">{itype}</span> &nbsp;'
                     f'<span class="ioc-val">{val}</span>'
                     + (f' &nbsp; <span style="color:#6e7fa3;font-size:0.78rem">({fam})</span>' if fam else "")
-                    + f'<br/><span style="font-size:0.75rem;color:#3d5a80">🔗 {links}</span>',
+                    + f'<br/><span style="font-size:0.75rem;color:#3d5a80"><i class="bi bi-box-arrow-up-right"></i> {links}</span>',
                     unsafe_allow_html=True,
                 )
         st.divider()
 
         display_cols = [c for c in ["ioc_type", "value", "malware_family", "tags"] if c in fi.columns]
         csv = fi[display_cols].to_csv(index=False).encode()
-        st.download_button("⬇ Export as CSV", csv, "iocs_export.csv", "text/csv")
+        st.download_button("↓  Export as CSV", csv, "iocs_export.csv", "text/csv")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CVE TRACKER
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_cves:
-    st.subheader("CVE Tracker")
+    st.markdown('<p class="section-label"><i class="bi bi-bug-fill bi-sm icon-error"></i>&nbsp; CVE Tracker</p>', unsafe_allow_html=True)
 
     if cves.empty:
         st.info("CVE data loading from CISA KEV and NVD feeds…")
@@ -1028,14 +1042,14 @@ with tab_cves:
             },
         )
         csv_c = fc[dcols].to_csv(index=False).encode()
-        st.download_button("⬇ Export CVEs as CSV", csv_c, "cves_export.csv", "text/csv")
+        st.download_button("↓  Export CVEs as CSV", csv_c, "cves_export.csv", "text/csv")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ATT&CK MAPPING
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_attack:
-    st.subheader("MITRE ATT&CK Mapping & Remediation")
+    st.markdown('<p class="section-label"><i class="bi bi-diagram-3-fill bi-sm icon-purple"></i>&nbsp; MITRE ATT&amp;CK Mapping &amp; Remediation</p>', unsafe_allow_html=True)
 
     if techniques_df.empty:
         st.info("ATT&CK data not loaded yet — collector populates this on its first 24-hour cycle.")
@@ -1102,7 +1116,7 @@ with tab_attack:
                         desc = str(tech.get("description") or "")
                         st.markdown(f"**Description:** {desc[:500]}{'…' if len(desc) > 500 else ''}")
                         st.markdown(
-                            f"[🔗 MITRE ATT&CK](https://attack.mitre.org/techniques/{tid.replace('.','/')})"
+                            f"[↗ MITRE ATT&CK](https://attack.mitre.org/techniques/{tid.replace('.','/')})"
                         )
                     with cr:
                         tm = mitigations_df[mitigations_df["technique_id"] == tid]
@@ -1113,7 +1127,7 @@ with tab_attack:
                             for _, mit in tm.iterrows():
                                 with st.container():
                                     st.markdown(
-                                        f'🛡️ <span class="ttp-tag">{mit["mitigation_id"]}</span> '
+                                        f'<i class="bi bi-shield-check icon-ok bi-sm"></i> <span class="ttp-tag">{mit["mitigation_id"]}</span> '
                                         f'**{mit["name"]}**',
                                         unsafe_allow_html=True,
                                     )
@@ -1132,17 +1146,17 @@ with tab_attack:
             st.markdown(f"### {t['technique_id']} — {t['name']}")
             st.markdown(f"**Tactic(s):** {t.get('tactic','?')}")
             st.markdown(str(t.get("description") or ""))
-            st.markdown(f"[🔗 MITRE Reference](https://attack.mitre.org/techniques/{sel_id.replace('.','/')})")
+            st.markdown(f"[↗ MITRE Reference](https://attack.mitre.org/techniques/{sel_id.replace('.','/')})")
             mits = mitigations_df[mitigations_df["technique_id"] == sel_id]
             if mits.empty:
                 st.info("No mitigations mapped for this technique.")
             else:
                 st.markdown(f"#### {len(mits)} Recommended Mitigation(s)")
                 for _, m in mits.iterrows():
-                    with st.expander(f"🛡️ `{m['mitigation_id']}` {m['name']}"):
+                    with st.expander(f"◈ {m['mitigation_id']}  {m['name']}"):
                         st.markdown(str(m.get("description") or ""))
                         st.markdown(
-                            f"[View on MITRE](https://attack.mitre.org/mitigations/{m['mitigation_id']})"
+                            f"[↗ View on MITRE](https://attack.mitre.org/mitigations/{m['mitigation_id']})"
                         )
 
 
@@ -1150,7 +1164,7 @@ with tab_attack:
 # AI ANALYST
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_analyst:
-    st.subheader("🤖 AI Threat Intelligence Analyst")
+    st.markdown('<p class="section-label"><i class="bi bi-cpu-fill bi-sm icon-accent"></i>&nbsp; AI Threat Intelligence Analyst</p>', unsafe_allow_html=True)
 
     # ── Backend status (live health checks) ───────────────────────────────────
     ollama_ok   = _ollama_up()
@@ -1159,17 +1173,26 @@ with tab_analyst:
     chain = []
     # Show exactly what was loaded from the env so the user can verify
     model_list = ", ".join(_LOCAL_MODELS)
+    ok_icon  = '<i class="bi bi-circle-fill icon-ok"  style="font-size:0.55rem"></i>'
+    off_icon = '<i class="bi bi-circle-fill icon-muted" style="font-size:0.55rem"></i>'
+    cld_icon = '<i class="bi bi-cloud-fill icon-accent" style="font-size:0.7rem"></i>'
     chain.append(
-        (f"✅ Ollama [{model_list}]" if ollama_ok else f"⚫ Ollama offline [{model_list}]")
+        (f"{ok_icon} Ollama [{model_list}]" if ollama_ok else f"{off_icon} Ollama offline [{model_list}]")
     )
     if _LMSTUDIO_URL:
-        chain.append(("✅" if lmstudio_ok else "⚫") + f" LM Studio [{_LMSTUDIO_MDL}]")
+        chain.append((ok_icon if lmstudio_ok else off_icon) + f" LM Studio [{_LMSTUDIO_MDL}]")
     if _CLAUDE_KEY:
-        chain.append("☁️ Claude (fallback)")
+        chain.append(f"{cld_icon} Claude (fallback)")
     if _GEMINI_KEY:
-        chain.append("☁️ Gemini (fallback)")
+        chain.append(f"{cld_icon} Gemini (fallback)")
 
-    st.info("**AI chain (local first):** " + "  →  ".join(chain))
+    st.markdown(
+        '<div style="background:rgba(56,189,248,0.05);border:1px solid rgba(56,189,248,0.15);'
+        'border-radius:8px;padding:8px 14px;font-size:0.78rem;color:#4a6080;">'
+        '<i class="bi bi-cpu bi-sm icon-accent"></i>&nbsp; <strong style="color:#7aadcf">AI chain (local first):</strong>&nbsp; '
+        + '  <span style="color:#1e3a5f">›</span>  '.join(chain) + '</div>',
+        unsafe_allow_html=True,
+    )
 
     any_backend = ollama_ok or lmstudio_ok or bool(_CLAUDE_KEY) or bool(_GEMINI_KEY)
     if not any_backend:
@@ -1187,7 +1210,7 @@ with tab_analyst:
 
     # ── Starter question buttons (shown only on empty conversation) ───────────
     if not st.session_state.analyst_messages:
-        st.markdown("**💡 Suggested questions:**")
+        st.markdown('<span style="font-size:0.78rem;font-weight:700;color:#3d5a80;text-transform:uppercase;letter-spacing:0.1em"><i class="bi bi-stars bi-sm icon-accent"></i>&nbsp; Suggested questions</span>', unsafe_allow_html=True)
         starters = [
             "What are the most active threat actors right now?",
             "Which ATT&CK tactics are most commonly observed?",
@@ -1236,7 +1259,7 @@ with tab_analyst:
 
     # ── Clear button ──────────────────────────────────────────────────────────
     if st.session_state.analyst_messages:
-        if st.button("🗑️ Clear conversation", key="clear_analyst"):
+        if st.button("✕  Clear conversation", key="clear_analyst"):
             st.session_state.analyst_messages = []
             st.rerun()
 
@@ -1245,7 +1268,7 @@ with tab_analyst:
 # FEED HEALTH
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_health:
-    st.subheader("Feed Health & Status")
+    st.markdown('<p class="section-label"><i class="bi bi-broadcast bi-sm icon-ok"></i>&nbsp; Feed Health &amp; Status</p>', unsafe_allow_html=True)
 
     if feed_status.empty:
         st.info("No feed status yet — collector may still be starting.")
@@ -1278,10 +1301,12 @@ with tab_health:
             total    = int(row.get("total_records") or 0)
             recent   = int(row.get("records_fetched") or 0)
             err      = str(row.get("error_message") or "")
-            err_html = f'<div class="feed-error">⚠ {err[:120]}</div>' if err else ""
+            err_html = f'<div class="feed-error"><i class="bi bi-exclamation-triangle-fill"></i> {err[:120]}</div>' if err else ""
+            _si = {"ok": "check-circle-fill", "error": "x-circle-fill",
+                   "running": "arrow-repeat", "pending": "clock"}.get(status, "circle")
             st.markdown(f"""
 <div class="feed-card {status}">
-  <div class="status-dot {status}"></div>
+  <i class="bi bi-{_si} status-icon {status}"></i>
   <div class="feed-name">{str(row['feed_name']).upper()}</div>
   <div class="feed-meta">
     Last run: {last_run} &nbsp;·&nbsp; Last success: {last_ok}
