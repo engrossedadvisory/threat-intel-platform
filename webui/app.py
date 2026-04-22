@@ -25,82 +25,253 @@ from sqlalchemy.engine import URL as _URL
 # ─── Professional dark theme ──────────────────────────────────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
-html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+/* ── Reset & base ───────────────────────────────────────────────────────── */
+html, body, [class*="css"]  { font-family: 'Inter', sans-serif; }
+.stApp                       { background: #050810; }
+.block-container             { padding-top: 1rem !important; max-width: 1400px; }
 
-.stApp { background-color: #070b14; }
+/* ── Scrollbar ──────────────────────────────────────────────────────────── */
+::-webkit-scrollbar            { width: 6px; height: 6px; }
+::-webkit-scrollbar-track      { background: #0a0f1e; }
+::-webkit-scrollbar-thumb      { background: #1e3a5f; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover{ background: #2a5080; }
 
-/* Metric cards */
+/* ── Platform header ────────────────────────────────────────────────────── */
+.platform-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 24px; margin: -1rem -1rem 1.2rem -1rem;
+    background: linear-gradient(135deg, #060c1a 0%, #0a1428 60%, #060c1a 100%);
+    border-bottom: 1px solid #0f2040;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.6);
+}
+.platform-logo {
+    font-size: 1.35rem; font-weight: 800; letter-spacing: -0.02em;
+    background: linear-gradient(135deg, #38bdf8 0%, #818cf8 50%, #c084fc 100%);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}
+.platform-logo span { font-weight: 300; opacity: 0.7; }
+.platform-meta {
+    display: flex; align-items: center; gap: 20px;
+    font-size: 0.75rem; color: #4a6080;
+}
+.live-badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: rgba(6,214,160,0.08); border: 1px solid rgba(6,214,160,0.25);
+    color: #06d6a0; padding: 3px 10px; border-radius: 20px;
+    font-size: 0.7rem; font-weight: 700; letter-spacing: 0.1em;
+}
+.live-dot {
+    width: 7px; height: 7px; background: #06d6a0; border-radius: 50%;
+    animation: pulse-green 1.8s ease-in-out infinite;
+}
+@keyframes pulse-green {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(6,214,160,0.7); }
+    50%       { opacity: 0.6; box-shadow: 0 0 0 5px rgba(6,214,160,0); }
+}
+
+/* ── KPI cards ──────────────────────────────────────────────────────────── */
 div[data-testid="metric-container"] {
-    background: linear-gradient(135deg, #0d1526 0%, #0a1020 100%);
-    border: 1px solid #1a2744;
-    border-radius: 10px;
-    padding: 18px 20px;
-    box-shadow: 0 4px 15px rgba(0,0,0,0.4);
+    background: linear-gradient(145deg, #0c1628 0%, #080e1c 100%);
+    border: 1px solid #142038;
+    border-radius: 12px;
+    padding: 18px 20px 14px;
+    position: relative; overflow: hidden;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.03);
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+div[data-testid="metric-container"]::before {
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+    background: linear-gradient(90deg, transparent, #1e4080, transparent);
+}
+div[data-testid="metric-container"]:hover {
+    border-color: #1e3a5f; box-shadow: 0 6px 28px rgba(56,189,248,0.1);
 }
 div[data-testid="metric-container"] > label {
-    color: #6e7fa3 !important;
-    font-size: 0.75rem !important;
-    font-weight: 600 !important;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+    color: #4a6080 !important; font-size: 0.7rem !important;
+    font-weight: 700 !important; text-transform: uppercase; letter-spacing: 0.1em;
 }
-div[data-testid="metric-container"] > div { color: #e0e8ff !important; }
+div[data-testid="metric-container"] > div { color: #e2ecff !important; font-weight: 600 !important; }
 
-/* Tabs */
-button[data-baseweb="tab"] {
-    font-weight: 600 !important;
-    font-size: 0.82rem !important;
-    color: #5d7199 !important;
-    letter-spacing: 0.03em;
+/* ── Tabs ───────────────────────────────────────────────────────────────── */
+div[data-testid="stTabs"] > div:first-child {
+    border-bottom: 1px solid #0f2040;
+    background: rgba(8,14,28,0.8);
+    border-radius: 10px 10px 0 0;
+    padding: 0 8px;
 }
+button[data-baseweb="tab"] {
+    font-size: 0.78rem !important; font-weight: 600 !important;
+    color: #3d5a80 !important; letter-spacing: 0.04em;
+    padding: 10px 16px !important;
+    transition: color 0.2s !important;
+}
+button[data-baseweb="tab"]:hover { color: #7aadcf !important; }
 button[data-baseweb="tab"][aria-selected="true"] {
     color: #38bdf8 !important;
     border-bottom: 2px solid #38bdf8 !important;
+    text-shadow: 0 0 20px rgba(56,189,248,0.5);
 }
 
-/* Expanders / threat cards */
+/* ── Section headings ───────────────────────────────────────────────────── */
+h3, h4 { color: #c8d8f0 !important; font-weight: 700 !important; }
+.section-label {
+    font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.12em; color: #3d5a80;
+    padding: 0 0 8px 0; margin-bottom: 12px;
+    border-bottom: 1px solid #0f2040;
+}
+
+/* ── Threat cards (expanders) ───────────────────────────────────────────── */
 div[data-testid="stExpander"] {
-    background-color: #0d1526;
-    border: 1px solid #1a2744;
-    border-radius: 8px;
-    margin-bottom: 6px;
+    background: linear-gradient(145deg, #0c1628 0%, #080e1c 100%);
+    border: 1px solid #142038 !important;
+    border-left: 3px solid #1e4080 !important;
+    border-radius: 8px !important;
+    margin-bottom: 5px;
+    transition: border-color 0.15s, box-shadow 0.15s;
 }
-div[data-testid="stExpander"]:hover { border-color: #2a3f6a; }
+div[data-testid="stExpander"]:hover {
+    border-color: #1e3a5f !important;
+    border-left-color: #38bdf8 !important;
+    box-shadow: 0 4px 20px rgba(56,189,248,0.06);
+}
+div[data-testid="stExpander"] summary {
+    font-size: 0.84rem !important; font-weight: 500 !important;
+    color: #9ab8d8 !important; padding: 10px 14px !important;
+}
 
-/* Dataframes */
+/* ── Dataframes ─────────────────────────────────────────────────────────── */
 div[data-testid="stDataFrame"] {
-    border: 1px solid #1a2744;
-    border-radius: 8px;
+    border: 1px solid #142038; border-radius: 8px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+}
+div[data-testid="stDataFrame"] th {
+    background: #0a1428 !important; color: #4a6080 !important;
+    font-size: 0.72rem !important; font-weight: 700 !important;
+    text-transform: uppercase; letter-spacing: 0.08em;
 }
 
-/* Sidebar */
-section[data-testid="stSidebar"] { background-color: #0a0f1e; }
+/* ── Inputs & selects ───────────────────────────────────────────────────── */
+div[data-testid="stTextInput"] input,
+div[data-baseweb="select"] {
+    background: #0a1428 !important; border-color: #142038 !important;
+    color: #c8d8f0 !important; border-radius: 8px !important;
+}
+div[data-testid="stTextInput"] input:focus {
+    border-color: #38bdf8 !important;
+    box-shadow: 0 0 0 2px rgba(56,189,248,0.15) !important;
+}
 
-/* Divider */
-hr { border-color: #1a2744 !important; }
+/* ── Buttons ────────────────────────────────────────────────────────────── */
+div[data-testid="stButton"] > button {
+    background: linear-gradient(135deg, #0c1e38, #0a1428) !important;
+    border: 1px solid #1e3a5f !important; color: #7aadcf !important;
+    border-radius: 8px !important; font-weight: 600 !important;
+    font-size: 0.8rem !important; letter-spacing: 0.02em;
+    transition: all 0.2s !important;
+}
+div[data-testid="stButton"] > button:hover {
+    background: linear-gradient(135deg, #112a50, #0d1e38) !important;
+    border-color: #38bdf8 !important; color: #38bdf8 !important;
+    box-shadow: 0 0 16px rgba(56,189,248,0.2) !important;
+}
 
-/* Badges */
-.badge-critical { background:#3d0014; color:#ff4d6d; border:1px solid #ff4d6d;
-    padding:2px 9px; border-radius:20px; font-size:0.72rem; font-weight:700; font-family:'Inter',sans-serif; }
-.badge-high { background:#3d1a00; color:#ff8c42; border:1px solid #ff8c42;
-    padding:2px 9px; border-radius:20px; font-size:0.72rem; font-weight:700; font-family:'Inter',sans-serif; }
-.badge-medium { background:#2e2500; color:#ffd166; border:1px solid #ffd166;
-    padding:2px 9px; border-radius:20px; font-size:0.72rem; font-weight:700; font-family:'Inter',sans-serif; }
-.badge-low { background:#002a1a; color:#06d6a0; border:1px solid #06d6a0;
-    padding:2px 9px; border-radius:20px; font-size:0.72rem; font-weight:700; font-family:'Inter',sans-serif; }
-.badge-info { background:#001a33; color:#38bdf8; border:1px solid #38bdf8;
-    padding:2px 9px; border-radius:20px; font-size:0.72rem; font-weight:700; font-family:'Inter',sans-serif; }
-.feed-tag { background:#0d1e36; color:#7eaadb; border:1px solid #1e3a5f;
-    padding:1px 8px; border-radius:4px; font-size:0.7rem; font-family:'JetBrains Mono',monospace; }
-.ttp-tag { background:#1a0d2e; color:#b48ef5; border:1px solid #5a3a8a;
-    padding:1px 8px; border-radius:4px; font-size:0.7rem; font-family:'JetBrains Mono',monospace; }
-.ioc-val { font-family:'JetBrains Mono',monospace; font-size:0.78rem; color:#a8d8ea; }
-.stat-card { background: linear-gradient(135deg,#0d1526,#0a1020); border:1px solid #1a2744;
-    border-radius:10px; padding:16px 20px; text-align:center; }
-.stat-card .num { font-size:2rem; font-weight:700; color:#38bdf8; line-height:1.1; }
-.stat-card .label { font-size:0.72rem; color:#6e7fa3; text-transform:uppercase; letter-spacing:0.08em; }
+/* ── st.info / warning / error ──────────────────────────────────────────── */
+div[data-testid="stAlert"][data-alert-type="info"] {
+    background: rgba(56,189,248,0.06) !important;
+    border: 1px solid rgba(56,189,248,0.2) !important;
+    border-radius: 8px !important; color: #7aadcf !important;
+}
+div[data-testid="stAlert"][data-alert-type="warning"] {
+    background: rgba(255,209,102,0.06) !important;
+    border: 1px solid rgba(255,209,102,0.25) !important;
+    border-radius: 8px !important;
+}
+div[data-testid="stAlert"][data-alert-type="error"] {
+    background: rgba(255,77,109,0.08) !important;
+    border: 1px solid rgba(255,77,109,0.3) !important;
+    border-radius: 8px !important;
+}
+
+/* ── AI chat ────────────────────────────────────────────────────────────── */
+div[data-testid="stChatMessage"] {
+    background: linear-gradient(145deg, #0c1628, #080e1c) !important;
+    border: 1px solid #142038 !important; border-radius: 10px !important;
+    margin-bottom: 8px;
+}
+div[data-testid="stChatInputContainer"] {
+    background: #0a1428 !important; border: 1px solid #1e3a5f !important;
+    border-radius: 12px !important;
+}
+div[data-testid="stChatInputContainer"]:focus-within {
+    border-color: #38bdf8 !important;
+    box-shadow: 0 0 0 2px rgba(56,189,248,0.12) !important;
+}
+
+/* ── Sidebar ────────────────────────────────────────────────────────────── */
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #060c1a 0%, #080f1e 100%);
+    border-right: 1px solid #0f2040;
+}
+
+/* ── Dividers ───────────────────────────────────────────────────────────── */
+hr { border: none !important; border-top: 1px solid #0f2040 !important; margin: 1.2rem 0 !important; }
+
+/* ── Status cards (feed health) ─────────────────────────────────────────── */
+.feed-card {
+    background: linear-gradient(145deg, #0c1628, #080e1c);
+    border: 1px solid #142038; border-left: 3px solid #1e4080;
+    border-radius: 8px; padding: 12px 16px; margin-bottom: 6px;
+    display: flex; align-items: center; gap: 16px;
+}
+.feed-card.ok    { border-left-color: #06d6a0; }
+.feed-card.error { border-left-color: #ff4d6d; }
+.feed-card.running { border-left-color: #38bdf8; }
+.feed-card.pending { border-left-color: #ffd166; }
+.feed-name { font-weight: 700; font-size: 0.82rem; color: #c8d8f0; min-width: 140px; font-family: 'JetBrains Mono', monospace; }
+.feed-meta { font-size: 0.73rem; color: #3d5a80; flex: 1; }
+.feed-count { font-size: 0.78rem; font-weight: 600; color: #38bdf8; font-family: 'JetBrains Mono', monospace; min-width: 80px; text-align: right; }
+.feed-error { font-size: 0.72rem; color: #ff8060; margin-top: 3px; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.status-dot.ok      { background: #06d6a0; box-shadow: 0 0 6px rgba(6,214,160,0.6); animation: pulse-green 2s infinite; }
+.status-dot.error   { background: #ff4d6d; box-shadow: 0 0 6px rgba(255,77,109,0.6); }
+.status-dot.running { background: #38bdf8; box-shadow: 0 0 6px rgba(56,189,248,0.6); animation: pulse-blue 1.2s infinite; }
+.status-dot.pending { background: #ffd166; }
+@keyframes pulse-blue {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(56,189,248,0.7); }
+    50%       { box-shadow: 0 0 0 5px rgba(56,189,248,0); }
+}
+
+/* ── Badges ─────────────────────────────────────────────────────────────── */
+.badge-critical { background: rgba(255,77,109,0.1); color: #ff4d6d; border: 1px solid rgba(255,77,109,0.4);
+    padding: 2px 9px; border-radius: 20px; font-size: 0.68rem; font-weight: 800;
+    font-family: 'Inter', sans-serif; letter-spacing: 0.06em; text-transform: uppercase; }
+.badge-high { background: rgba(255,140,66,0.1); color: #ff8c42; border: 1px solid rgba(255,140,66,0.4);
+    padding: 2px 9px; border-radius: 20px; font-size: 0.68rem; font-weight: 800;
+    font-family: 'Inter', sans-serif; letter-spacing: 0.06em; text-transform: uppercase; }
+.badge-medium { background: rgba(255,209,102,0.1); color: #ffd166; border: 1px solid rgba(255,209,102,0.4);
+    padding: 2px 9px; border-radius: 20px; font-size: 0.68rem; font-weight: 800;
+    font-family: 'Inter', sans-serif; letter-spacing: 0.06em; text-transform: uppercase; }
+.badge-low { background: rgba(6,214,160,0.08); color: #06d6a0; border: 1px solid rgba(6,214,160,0.3);
+    padding: 2px 9px; border-radius: 20px; font-size: 0.68rem; font-weight: 800;
+    font-family: 'Inter', sans-serif; letter-spacing: 0.06em; text-transform: uppercase; }
+.badge-info { background: rgba(56,189,248,0.08); color: #38bdf8; border: 1px solid rgba(56,189,248,0.3);
+    padding: 2px 9px; border-radius: 20px; font-size: 0.68rem; font-weight: 800;
+    font-family: 'Inter', sans-serif; letter-spacing: 0.06em; }
+
+/* ── Tags ───────────────────────────────────────────────────────────────── */
+.feed-tag { background: rgba(30,64,128,0.4); color: #5b8ed4; border: 1px solid rgba(56,130,240,0.25);
+    padding: 1px 8px; border-radius: 4px; font-size: 0.68rem;
+    font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+.ttp-tag  { background: rgba(90,58,138,0.3); color: #b48ef5; border: 1px solid rgba(139,92,246,0.3);
+    padding: 1px 8px; border-radius: 4px; font-size: 0.68rem;
+    font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+.ioc-val  { font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: #7dd3fc; }
+
+/* ── Critical glow on metric values ────────────────────────────────────── */
+.metric-glow { color: #ff4d6d !important; text-shadow: 0 0 20px rgba(255,77,109,0.5); }
 </style>
 """, unsafe_allow_html=True)
 
@@ -407,16 +578,23 @@ def analyst_reply(messages: list) -> str:
 reports, iocs, cves, feed_status = load_data()
 techniques_df, mitigations_df = load_attack_data()
 
-# ─── Header ───────────────────────────────────────────────────────────────────
-col_title, col_time = st.columns([3, 1])
-with col_title:
-    st.markdown("## 🛡️ Threat Intelligence Platform")
-with col_time:
-    st.markdown(
-        f"<div style='text-align:right;color:#5d7199;font-size:0.8rem;padding-top:14px'>"
-        f"🕐 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC · live</div>",
-        unsafe_allow_html=True,
-    )
+# ─── Platform header ──────────────────────────────────────────────────────────
+_now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+_enriched = int((reports["summary"].notna() & (reports["summary"] != "")).sum()) if not reports.empty else 0
+st.markdown(f"""
+<div class="platform-header">
+  <div>
+    <div class="platform-logo">THREAT<span>INTEL</span> PLATFORM</div>
+    <div style="font-size:0.65rem;color:#2a4060;margin-top:3px;font-family:'JetBrains Mono',monospace;">
+      NEXT-GEN OSINT · MITRE ATT&CK · AI ENRICHMENT
+    </div>
+  </div>
+  <div class="platform-meta">
+    <span style="font-family:'JetBrains Mono',monospace">{_now_utc} UTC</span>
+    <span class="live-badge"><span class="live-dot"></span>LIVE</span>
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
 # ─── Top KPI strip ────────────────────────────────────────────────────────────
 k1, k2, k3, k4, k5, k6 = st.columns(6)
@@ -1086,9 +1264,7 @@ with tab_health:
 
         st.divider()
         for _, row in feed_status.iterrows():
-            icon = {"ok": "✅", "error": "❌", "running": "🔄", "pending": "⏳"}.get(
-                str(row.get("status", "")), "❓"
-            )
+            status   = str(row.get("status", "pending"))
             last_run = (
                 row["last_run"].strftime("%Y-%m-%d %H:%M:%S")
                 if pd.notna(row.get("last_run")) and hasattr(row["last_run"], "strftime")
@@ -1099,11 +1275,17 @@ with tab_health:
                 if pd.notna(row.get("last_success")) and hasattr(row["last_success"], "strftime")
                 else "—"
             )
-            ca, cb, cc, cd, ce = st.columns([2, 2, 2, 1, 4])
-            with ca: st.markdown(f"{icon} **{str(row['feed_name']).upper()}**")
-            with cb: st.caption(f"Last run: {last_run}")
-            with cc: st.caption(f"Last success: {last_ok}")
-            with cd: st.caption(f"Total: {int(row.get('total_records') or 0):,}")
-            with ce:
-                err = row.get("error_message")
-                if err: st.caption(f"⚠️ {str(err)[:120]}")
+            total    = int(row.get("total_records") or 0)
+            recent   = int(row.get("records_fetched") or 0)
+            err      = str(row.get("error_message") or "")
+            err_html = f'<div class="feed-error">⚠ {err[:120]}</div>' if err else ""
+            st.markdown(f"""
+<div class="feed-card {status}">
+  <div class="status-dot {status}"></div>
+  <div class="feed-name">{str(row['feed_name']).upper()}</div>
+  <div class="feed-meta">
+    Last run: {last_run} &nbsp;·&nbsp; Last success: {last_ok}
+    {err_html}
+  </div>
+  <div class="feed-count">+{recent:,} / {total:,}</div>
+</div>""", unsafe_allow_html=True)
