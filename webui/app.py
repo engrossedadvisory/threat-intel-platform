@@ -48,12 +48,28 @@ html, body, [class*="css"]  { font-family: 'Inter', sans-serif; }
     box-shadow: 0 4px 24px rgba(0,0,0,0.6);
 }
 .platform-logo {
-    font-size: 1.5rem; font-weight: 900; letter-spacing: 0.06em;
-    background: linear-gradient(135deg, #38bdf8 0%, #818cf8 45%, #c084fc 100%);
-    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-    text-transform: uppercase;
+    display: flex; align-items: baseline; gap: 0;
+    font-size: 1.65rem; font-weight: 900; letter-spacing: 0.06em;
+    text-transform: uppercase; line-height: 1;
 }
-.platform-logo span { font-weight: 400; opacity: 0.65; letter-spacing: 0.04em; }
+.logo-van {
+    color: #ffffff;
+    font-weight: 900;
+    text-shadow:
+        0 0  6px #38bdf8,
+        0 0 14px #38bdf8,
+        0 0 28px rgba(56,189,248,0.7),
+        0 0 55px rgba(56,189,248,0.35),
+        0 0 90px rgba(56,189,248,0.15);
+}
+.logo-telligence {
+    font-weight: 900;
+    background: linear-gradient(100deg, #38bdf8 0%, #818cf8 48%, #c084fc 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    filter: drop-shadow(0 0 6px rgba(129,140,248,0.9)) drop-shadow(0 0 16px rgba(192,132,252,0.5));
+}
 .platform-meta {
     display: flex; align-items: center; gap: 20px;
     font-size: 0.75rem; color: #4a6080;
@@ -598,10 +614,51 @@ _now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 _enriched = int((reports["summary"].notna() & (reports["summary"] != "")).sum()) if not reports.empty else 0
 st.markdown(f"""
 <div class="platform-header">
-  <div>
-    <div class="platform-logo">VAN<span>TELLIGENCE</span></div>
-    <div style="font-size:0.65rem;color:#2a4060;margin-top:4px;font-family:'JetBrains Mono',monospace;letter-spacing:0.18em;">
-      SEE EVERY THREAT. BEFORE IT SEES YOU.
+  <div style="display:flex;align-items:center;gap:16px;">
+    <!-- SVG Logo: hexagonal targeting reticle with V mark -->
+    <svg width="46" height="46" viewBox="0 0 46 46" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0;">
+      <defs>
+        <linearGradient id="vg" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#38bdf8"/>
+          <stop offset="55%" stop-color="#818cf8"/>
+          <stop offset="100%" stop-color="#c084fc"/>
+        </linearGradient>
+        <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+          <feGaussianBlur stdDeviation="1.8" result="blur"/>
+          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+        <filter id="glow2" x="-50%" y="-50%" width="200%" height="200%">
+          <feGaussianBlur stdDeviation="3" result="blur"/>
+          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
+      <!-- Outer hex -->
+      <polygon points="23,2 41,12 41,34 23,44 5,34 5,12"
+               stroke="url(#vg)" stroke-width="1.5" fill="none" filter="url(#glow)"/>
+      <!-- Inner hex (subtle) -->
+      <polygon points="23,9 36,16.5 36,29.5 23,37 10,29.5 10,16.5"
+               stroke="url(#vg)" stroke-width="0.6" fill="none" opacity="0.35"/>
+      <!-- Corner accent ticks (top) -->
+      <line x1="23" y1="2" x2="23" y2="7"  stroke="#38bdf8" stroke-width="2.2" stroke-linecap="round"/>
+      <line x1="41" y1="12" x2="37.5" y2="14" stroke="#38bdf8" stroke-width="2.2" stroke-linecap="round"/>
+      <line x1="5"  y1="12" x2="8.5"  y2="14" stroke="#38bdf8" stroke-width="2.2" stroke-linecap="round"/>
+      <!-- Corner accent ticks (bottom) -->
+      <line x1="23" y1="44" x2="23" y2="39" stroke="#c084fc" stroke-width="2.2" stroke-linecap="round"/>
+      <line x1="41" y1="34" x2="37.5" y2="32" stroke="#c084fc" stroke-width="2.2" stroke-linecap="round"/>
+      <line x1="5"  y1="34" x2="8.5"  y2="32" stroke="#c084fc" stroke-width="2.2" stroke-linecap="round"/>
+      <!-- V mark (centre) -->
+      <path d="M13 14 L23 33 L33 14"
+            stroke="url(#vg)" stroke-width="3" fill="none"
+            stroke-linecap="round" stroke-linejoin="round" filter="url(#glow2)"/>
+      <!-- Centre dot -->
+      <circle cx="23" cy="23" r="1.5" fill="url(#vg)" opacity="0.7"/>
+    </svg>
+    <!-- Wordmark -->
+    <div>
+      <div class="platform-logo"><span class="logo-van">VAN</span><span class="logo-telligence">TELLIGENCE</span></div>
+      <div style="font-size:0.6rem;color:#5a7fa8;margin-top:5px;font-family:'JetBrains Mono',monospace;letter-spacing:0.22em;text-transform:uppercase;">
+        SEE EVERY THREAT. BEFORE IT SEES YOU.
+      </div>
     </div>
   </div>
   <div class="platform-meta">
