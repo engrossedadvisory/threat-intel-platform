@@ -13,7 +13,7 @@ from sqlalchemy import create_engine
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
-    page_title="ThreatIntel Platform",
+    page_title="VANTELLIGENCE",
     layout="wide",
     page_icon="⬡",
     initial_sidebar_state="collapsed",
@@ -48,11 +48,12 @@ html, body, [class*="css"]  { font-family: 'Inter', sans-serif; }
     box-shadow: 0 4px 24px rgba(0,0,0,0.6);
 }
 .platform-logo {
-    font-size: 1.35rem; font-weight: 800; letter-spacing: -0.02em;
-    background: linear-gradient(135deg, #38bdf8 0%, #818cf8 50%, #c084fc 100%);
+    font-size: 1.5rem; font-weight: 900; letter-spacing: 0.06em;
+    background: linear-gradient(135deg, #38bdf8 0%, #818cf8 45%, #c084fc 100%);
     -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    text-transform: uppercase;
 }
-.platform-logo span { font-weight: 300; opacity: 0.7; }
+.platform-logo span { font-weight: 400; opacity: 0.65; letter-spacing: 0.04em; }
 .platform-meta {
     display: flex; align-items: center; gap: 20px;
     font-size: 0.75rem; color: #4a6080;
@@ -598,9 +599,9 @@ _enriched = int((reports["summary"].notna() & (reports["summary"] != "")).sum())
 st.markdown(f"""
 <div class="platform-header">
   <div>
-    <div class="platform-logo">THREAT<span>INTEL</span> PLATFORM</div>
-    <div style="font-size:0.65rem;color:#2a4060;margin-top:3px;font-family:'JetBrains Mono',monospace;">
-      NEXT-GEN OSINT · MITRE ATT&CK · AI ENRICHMENT
+    <div class="platform-logo">VAN<span>TELLIGENCE</span></div>
+    <div style="font-size:0.65rem;color:#2a4060;margin-top:4px;font-family:'JetBrains Mono',monospace;letter-spacing:0.18em;">
+      SEE EVERY THREAT. BEFORE IT SEES YOU.
     </div>
   </div>
   <div class="platform-meta">
