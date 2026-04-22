@@ -34,7 +34,9 @@ services:
       - CLAUDE_API_KEY=${CLAUDE_API_KEY:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2}
+      - OLLAMA_MODELS=${OLLAMA_MODELS:-llama3.2}
+      - LMSTUDIO_URL=${LMSTUDIO_URL:-}
+      - LMSTUDIO_MODEL=${LMSTUDIO_MODEL:-local-model}
       - OTX_API_KEY=${OTX_API_KEY:-}
       - ABUSECH_API_KEY=${ABUSECH_API_KEY:-}
       - PYTHONUNBUFFERED=1
@@ -60,7 +62,9 @@ services:
       - CLAUDE_API_KEY=${CLAUDE_API_KEY:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2}
+      - OLLAMA_MODELS=${OLLAMA_MODELS:-llama3.2}
+      - LMSTUDIO_URL=${LMSTUDIO_URL:-}
+      - LMSTUDIO_MODEL=${LMSTUDIO_MODEL:-local-model}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

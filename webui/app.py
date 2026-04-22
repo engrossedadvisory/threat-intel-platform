@@ -228,10 +228,14 @@ def _ttp_map(reports: pd.DataFrame) -> dict:
 
 
 # ─── AI Analyst ───────────────────────────────────────────────────────────────
-_OLLAMA_URL   = os.getenv("OLLAMA_URL",   "http://host.docker.internal:11434")
-_OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
-_CLAUDE_KEY   = os.getenv("CLAUDE_API_KEY", "")
-_GEMINI_KEY   = os.getenv("GEMINI_API_KEY", "")
+_OLLAMA_URL    = os.getenv("OLLAMA_URL",    "http://host.docker.internal:11434")
+_LMSTUDIO_URL  = os.getenv("LMSTUDIO_URL",  "")
+_LMSTUDIO_MDL  = os.getenv("LMSTUDIO_MODEL", "local-model")
+_CLAUDE_KEY    = os.getenv("CLAUDE_API_KEY", "")
+_GEMINI_KEY    = os.getenv("GEMINI_API_KEY", "")
+
+_raw = os.getenv("OLLAMA_MODELS") or os.getenv("OLLAMA_MODEL", "llama3.2")
+_LOCAL_MODELS: list = [m.strip() for m in _raw.split(",") if m.strip()]
 
 _ANALYST_SYSTEM = """\
 You are an expert Cyber Threat Intelligence (CTI) analyst with deep knowledge of MITRE ATT&CK,
@@ -289,12 +293,76 @@ def _build_context(reports, iocs, cves, techniques_df) -> str:
     return "\n".join(lines)
 
 
+def _ollama_up() -> bool:
+    try:
+        return _requests.get(f"{_OLLAMA_URL}/api/tags", timeout=2).ok
+    except Exception:
+        return False
+
+
+def _lmstudio_up() -> bool:
+    if not _LMSTUDIO_URL:
+        return False
+    try:
+        return _requests.get(f"{_LMSTUDIO_URL}/v1/models", timeout=2).ok
+    except Exception:
+        return False
+
+
+def _analyst_ollama_model(messages: list, model: str) -> Optional[str]:
+    prompt = "\n\n".join(
+        f"{'Assistant' if m['role'] == 'assistant' else 'User'}: {m['content']}"
+        for m in messages
+    ) + "\n\nAssistant:"
+    try:
+        resp = _requests.post(
+            f"{_OLLAMA_URL}/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False},
+            timeout=90,
+        )
+        resp.raise_for_status()
+        return resp.json().get("response", "").strip() or None
+    except Exception:
+        return None
+
+
+def _analyst_ollama(messages: list) -> Optional[str]:
+    """Try each configured local Ollama model; skip instantly if server is down."""
+    if not _ollama_up():
+        return None
+    for model in _LOCAL_MODELS:
+        reply = _analyst_ollama_model(messages, model)
+        if reply:
+            return reply
+    return None
+
+
+def _analyst_lmstudio(messages: list) -> Optional[str]:
+    """OpenAI-compatible chat via LM Studio (or any local server)."""
+    if not _lmstudio_up():
+        return None
+    try:
+        chat_msgs = [m for m in messages if m["role"] != "system"]
+        system    = next((m["content"] for m in messages if m["role"] == "system"), "")
+        payload   = ([{"role": "system", "content": system}] + chat_msgs) if system else chat_msgs
+        resp = _requests.post(
+            f"{_LMSTUDIO_URL}/v1/chat/completions",
+            json={"model": _LMSTUDIO_MDL, "messages": payload,
+                  "temperature": 0.2, "max_tokens": 1500},
+            timeout=90,
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"].strip() or None
+    except Exception:
+        return None
+
+
 def _analyst_claude(messages: list) -> Optional[str]:
     if not _CLAUDE_KEY:
         return None
     try:
         import anthropic
-        client = anthropic.Anthropic(api_key=_CLAUDE_KEY)
+        client     = anthropic.Anthropic(api_key=_CLAUDE_KEY)
         system_msg = next((m["content"] for m in messages if m["role"] == "system"), "")
         chat_msgs  = [m for m in messages if m["role"] != "system"]
         result = client.messages.create(
@@ -313,41 +381,25 @@ def _analyst_gemini(messages: list) -> Optional[str]:
         return None
     try:
         from google import genai
-        client = genai.Client(api_key=_GEMINI_KEY)
+        client   = genai.Client(api_key=_GEMINI_KEY)
         combined = "\n\n".join(m["content"] for m in messages)
-        result = client.models.generate_content(model="gemini-2.0-flash", contents=combined)
+        result   = client.models.generate_content(model="gemini-2.0-flash", contents=combined)
         return result.text.strip() or None
     except Exception:
         return None
 
 
-def _analyst_ollama(messages: list) -> Optional[str]:
-    try:
-        prompt = "\n\n".join(
-            f"{'Assistant' if m['role'] == 'assistant' else 'User'}: {m['content']}"
-            for m in messages
-        ) + "\n\nAssistant:"
-        resp = _requests.post(
-            f"{_OLLAMA_URL}/api/generate",
-            json={"model": _OLLAMA_MODEL, "prompt": prompt, "stream": False},
-            timeout=15,   # short timeout — Ollama is last resort
-        )
-        resp.raise_for_status()
-        return resp.json().get("response", "").strip() or None
-    except Exception:
-        return None
-
-
 def analyst_reply(messages: list) -> str:
-    """Call backends in order: Claude → Gemini → Ollama."""
-    for fn in (_analyst_claude, _analyst_gemini, _analyst_ollama):
+    """Local-first: Ollama models → LM Studio → Claude → Gemini.
+    Cloud APIs only reached if every local option is down or returns nothing."""
+    for fn in (_analyst_ollama, _analyst_lmstudio, _analyst_claude, _analyst_gemini):
         reply = fn(messages)
         if reply:
             return reply
     return (
         "⚠️ No AI backend is reachable. "
-        "Set CLAUDE_API_KEY or GEMINI_API_KEY in the server's .env file, "
-        "or run Ollama locally at the configured OLLAMA_URL."
+        "Set OLLAMA_MODELS in .env (e.g. llama3.2,mistral,phi3), "
+        "or configure CLAUDE_API_KEY / GEMINI_API_KEY as a cloud fallback."
     )
 
 
@@ -922,17 +974,29 @@ with tab_attack:
 with tab_analyst:
     st.subheader("🤖 AI Threat Intelligence Analyst")
 
-    # Backend status
-    backends = []
-    if _CLAUDE_KEY:  backends.append("✅ Claude API")
-    if _GEMINI_KEY:  backends.append("✅ Gemini API")
-    backends.append("⚙️ Ollama (fallback)")
-    st.info("**Active backends (tried in order):** " + "  →  ".join(backends))
+    # Backend status — check live availability
+    ollama_ok    = _ollama_up()
+    lmstudio_ok  = _lmstudio_up()
 
-    if not _CLAUDE_KEY and not _GEMINI_KEY:
+    chain = []
+    if ollama_ok:
+        chain.append(f"✅ Ollama ({', '.join(_LOCAL_MODELS)})")
+    else:
+        chain.append(f"⚫ Ollama (unreachable — {', '.join(_LOCAL_MODELS)})")
+    if _LMSTUDIO_URL:
+        chain.append(("✅" if lmstudio_ok else "⚫") + f" LM Studio ({_LMSTUDIO_MDL})")
+    if _CLAUDE_KEY:
+        chain.append("☁️ Claude API (fallback)")
+    if _GEMINI_KEY:
+        chain.append("☁️ Gemini API (fallback)")
+
+    st.info("**Backend chain (local first):** " + "  →  ".join(chain))
+
+    if not ollama_ok and not lmstudio_ok and not _CLAUDE_KEY and not _GEMINI_KEY:
         st.warning(
-            "No API keys configured. Add **CLAUDE_API_KEY** or **GEMINI_API_KEY** "
-            "to the server `.env` file and rebuild the webui container."
+            "No AI backend is reachable. "
+            "Set **OLLAMA_MODELS** in `.env` (e.g. `llama3.2,mistral,phi3`) "
+            "and ensure Ollama is running, or add a cloud API key as fallback."
         )
 
     if "analyst_messages" not in st.session_state:
