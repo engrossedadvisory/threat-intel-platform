@@ -6,15 +6,105 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from streamlit_autorefresh import st_autorefresh
 
-st.set_page_config(page_title="Threat Intel Platform", layout="wide", page_icon="🛡️")
+st.set_page_config(
+    page_title="ThreatIntel Platform",
+    layout="wide",
+    page_icon="🛡️",
+    initial_sidebar_state="collapsed",
+)
 st_autorefresh(interval=30000, key="refresh")
 
 from sqlalchemy.engine import URL as _URL
 
+# ─── Professional dark theme ──────────────────────────────────────────────────
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+
+.stApp { background-color: #070b14; }
+
+/* Metric cards */
+div[data-testid="metric-container"] {
+    background: linear-gradient(135deg, #0d1526 0%, #0a1020 100%);
+    border: 1px solid #1a2744;
+    border-radius: 10px;
+    padding: 18px 20px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.4);
+}
+div[data-testid="metric-container"] > label {
+    color: #6e7fa3 !important;
+    font-size: 0.75rem !important;
+    font-weight: 600 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+div[data-testid="metric-container"] > div { color: #e0e8ff !important; }
+
+/* Tabs */
+button[data-baseweb="tab"] {
+    font-weight: 600 !important;
+    font-size: 0.82rem !important;
+    color: #5d7199 !important;
+    letter-spacing: 0.03em;
+}
+button[data-baseweb="tab"][aria-selected="true"] {
+    color: #38bdf8 !important;
+    border-bottom: 2px solid #38bdf8 !important;
+}
+
+/* Expanders / threat cards */
+div[data-testid="stExpander"] {
+    background-color: #0d1526;
+    border: 1px solid #1a2744;
+    border-radius: 8px;
+    margin-bottom: 6px;
+}
+div[data-testid="stExpander"]:hover { border-color: #2a3f6a; }
+
+/* Dataframes */
+div[data-testid="stDataFrame"] {
+    border: 1px solid #1a2744;
+    border-radius: 8px;
+}
+
+/* Sidebar */
+section[data-testid="stSidebar"] { background-color: #0a0f1e; }
+
+/* Divider */
+hr { border-color: #1a2744 !important; }
+
+/* Badges */
+.badge-critical { background:#3d0014; color:#ff4d6d; border:1px solid #ff4d6d;
+    padding:2px 9px; border-radius:20px; font-size:0.72rem; font-weight:700; font-family:'Inter',sans-serif; }
+.badge-high { background:#3d1a00; color:#ff8c42; border:1px solid #ff8c42;
+    padding:2px 9px; border-radius:20px; font-size:0.72rem; font-weight:700; font-family:'Inter',sans-serif; }
+.badge-medium { background:#2e2500; color:#ffd166; border:1px solid #ffd166;
+    padding:2px 9px; border-radius:20px; font-size:0.72rem; font-weight:700; font-family:'Inter',sans-serif; }
+.badge-low { background:#002a1a; color:#06d6a0; border:1px solid #06d6a0;
+    padding:2px 9px; border-radius:20px; font-size:0.72rem; font-weight:700; font-family:'Inter',sans-serif; }
+.badge-info { background:#001a33; color:#38bdf8; border:1px solid #38bdf8;
+    padding:2px 9px; border-radius:20px; font-size:0.72rem; font-weight:700; font-family:'Inter',sans-serif; }
+.feed-tag { background:#0d1e36; color:#7eaadb; border:1px solid #1e3a5f;
+    padding:1px 8px; border-radius:4px; font-size:0.7rem; font-family:'JetBrains Mono',monospace; }
+.ttp-tag { background:#1a0d2e; color:#b48ef5; border:1px solid #5a3a8a;
+    padding:1px 8px; border-radius:4px; font-size:0.7rem; font-family:'JetBrains Mono',monospace; }
+.ioc-val { font-family:'JetBrains Mono',monospace; font-size:0.78rem; color:#a8d8ea; }
+.stat-card { background: linear-gradient(135deg,#0d1526,#0a1020); border:1px solid #1a2744;
+    border-radius:10px; padding:16px 20px; text-align:center; }
+.stat-card .num { font-size:2rem; font-weight:700; color:#38bdf8; line-height:1.1; }
+.stat-card .label { font-size:0.72rem; color:#6e7fa3; text-transform:uppercase; letter-spacing:0.08em; }
+</style>
+""", unsafe_allow_html=True)
+
+# ─── Database ─────────────────────────────────────────────────────────────────
 _DB_URL = _URL.create(
     drivername="postgresql+psycopg2",
     username=os.getenv("POSTGRES_USER", "intel_admin"),
@@ -56,13 +146,11 @@ def load_attack_data():
             "SELECT * FROM mitre_techniques ORDER BY technique_id", engine
         )
         mitigations = pd.read_sql(
-            """
-            SELECT mm.mitigation_id, mm.name, mm.description,
-                   mt.technique_id, mt.name AS tech_name, mt.tactic
-            FROM mitre_mitigations mm
-            JOIN mitre_techniques mt ON mm.technique_fk = mt.id
-            ORDER BY mt.technique_id, mm.mitigation_id
-            """,
+            """SELECT mm.mitigation_id, mm.name, mm.description,
+                      mt.technique_id, mt.name AS tech_name, mt.tactic
+               FROM mitre_mitigations mm
+               JOIN mitre_techniques mt ON mm.technique_fk = mt.id
+               ORDER BY mt.technique_id, mm.mitigation_id""",
             engine,
         )
         return techniques, mitigations
@@ -70,117 +158,135 @@ def load_attack_data():
         return pd.DataFrame(), pd.DataFrame()
 
 
-# ─── AI Analyst back-end ──────────────────────────────────────────────────────
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+_PLOTLY_DARK = dict(
+    template="plotly_dark",
+    paper_bgcolor="#070b14",
+    plot_bgcolor="#0d1526",
+    font_color="#c9d1d9",
+    margin=dict(l=20, r=20, t=40, b=20),
+)
 
-_OLLAMA_URL  = os.getenv("OLLAMA_URL",  "http://host.docker.internal:11434")
+
+def _severity_badge(score: int) -> str:
+    if score >= 90:
+        return f'<span class="badge-critical">CRITICAL</span>'
+    if score >= 70:
+        return f'<span class="badge-high">HIGH</span>'
+    if score >= 40:
+        return f'<span class="badge-medium">MEDIUM</span>'
+    return f'<span class="badge-low">LOW</span>'
+
+
+def _cvss_badge(score) -> str:
+    try:
+        s = float(score)
+    except (TypeError, ValueError):
+        return '<span class="badge-info">N/A</span>'
+    if s >= 9.0:
+        return f'<span class="badge-critical">CVSS {s:.1f}</span>'
+    if s >= 7.0:
+        return f'<span class="badge-high">CVSS {s:.1f}</span>'
+    if s >= 4.0:
+        return f'<span class="badge-medium">CVSS {s:.1f}</span>'
+    return f'<span class="badge-low">CVSS {s:.1f}</span>'
+
+
+def _enrichment_links(ioc_type: str, value: str) -> str:
+    """Return HTML enrichment links for an IOC based on its type."""
+    vt = f"https://www.virustotal.com/gui/search/{value}"
+    links = [f'<a href="{vt}" target="_blank">VirusTotal</a>']
+    t = ioc_type.lower()
+    if "ip" in t:
+        links.append(f'<a href="https://www.abuseipdb.com/check/{value}" target="_blank">AbuseIPDB</a>')
+        links.append(f'<a href="https://www.shodan.io/host/{value}" target="_blank">Shodan</a>')
+        links.append(f'<a href="https://otx.alienvault.com/indicator/ip/{value}" target="_blank">OTX</a>')
+    elif "domain" in t or "url" in t:
+        links.append(f'<a href="https://urlscan.io/search/#{value}" target="_blank">URLScan</a>')
+        links.append(f'<a href="https://otx.alienvault.com/indicator/domain/{value}" target="_blank">OTX</a>')
+    elif "hash" in t:
+        links.append(f'<a href="https://bazaar.abuse.ch/browse.php?search=sha256%3A{value}" target="_blank">MalwareBazaar</a>')
+        links.append(f'<a href="https://otx.alienvault.com/indicator/file/{value}" target="_blank">OTX</a>')
+    return " · ".join(links)
+
+
+def _ttp_map(reports: pd.DataFrame) -> dict:
+    counts: dict = {}
+    for _, row in reports.iterrows():
+        raw = row.get("ttps") or []
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = []
+        actor = str(row.get("threat_actor") or "Unknown")
+        for t in (raw or []):
+            e = counts.setdefault(t, {"count": 0, "actors": set()})
+            e["count"] += 1
+            e["actors"].add(actor)
+    return counts
+
+
+# ─── AI Analyst ───────────────────────────────────────────────────────────────
+_OLLAMA_URL   = os.getenv("OLLAMA_URL",   "http://host.docker.internal:11434")
 _OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
-_CLAUDE_KEY  = os.getenv("CLAUDE_API_KEY", "")
-_GEMINI_KEY  = os.getenv("GEMINI_API_KEY", "")
+_CLAUDE_KEY   = os.getenv("CLAUDE_API_KEY", "")
+_GEMINI_KEY   = os.getenv("GEMINI_API_KEY", "")
 
 _ANALYST_SYSTEM = """\
 You are an expert Cyber Threat Intelligence (CTI) analyst with deep knowledge of MITRE ATT&CK,
 CVE databases, IOC analysis, and threat actor tradecraft. You have access to a live threat
-intelligence database that is summarized below.
-
-Answer questions clearly and concisely. When referencing techniques use their ATT&CK IDs
-(e.g. T1566.001). When mentioning CVEs include their CVSS score if available. If asked for
-recommendations, provide actionable, prioritized steps. If the data doesn't contain enough
-information to answer definitively, say so rather than speculating.
+intelligence database summarised below. Answer clearly and concisely. Reference ATT&CK IDs
+(e.g. T1566.001) and CVE IDs where relevant. Give actionable, prioritised recommendations when
+asked. Say so honestly if the data is insufficient rather than speculating.
 
 Current database snapshot:
 {context}"""
 
 
-def _build_context(reports: pd.DataFrame, iocs: pd.DataFrame,
-                   cves: pd.DataFrame, techniques_df: pd.DataFrame) -> str:
-    """Summarise the current DB state into a compact context string for the LLM."""
+def _build_context(reports, iocs, cves, techniques_df) -> str:
     lines = []
-
-    # Feed summary
     if not reports.empty:
         by_feed = reports.groupby("source_feed").size().to_dict()
         lines.append("THREAT REPORTS BY FEED: " + ", ".join(f"{k}={v}" for k, v in by_feed.items()))
         lines.append(f"TOTAL REPORTS: {len(reports)}")
-
-        # Top actors
-        actors = (
-            reports["threat_actor"]
-            .dropna()
-            .value_counts()
-            .head(10)
-            .to_dict()
-        )
+        actors = reports["threat_actor"].dropna().value_counts().head(10).to_dict()
         if actors:
-            lines.append("TOP THREAT ACTORS: " + ", ".join(f"{a} ({c})" for a, c in actors.items()))
-
-        # TTP frequency
+            lines.append("TOP THREAT ACTORS: " + ", ".join(f"{a}({c})" for a, c in actors.items()))
         ttp_counts: dict = {}
         for _, row in reports.iterrows():
-            raw_ttps = row.get("ttps") or []
-            if isinstance(raw_ttps, str):
+            raw = row.get("ttps") or []
+            if isinstance(raw, str):
                 try:
-                    raw_ttps = json.loads(raw_ttps)
+                    raw = json.loads(raw)
                 except Exception:
-                    raw_ttps = []
-            for t in (raw_ttps or []):
+                    raw = []
+            for t in (raw or []):
                 ttp_counts[t] = ttp_counts.get(t, 0) + 1
         if ttp_counts:
-            top_ttps = sorted(ttp_counts.items(), key=lambda x: -x[1])[:15]
-            lines.append("TOP OBSERVED TTPS: " + ", ".join(f"{t}({c})" for t, c in top_ttps))
-
-        # Recent summaries (up to 10)
+            top = sorted(ttp_counts.items(), key=lambda x: -x[1])[:15]
+            lines.append("TOP OBSERVED TTPS: " + ", ".join(f"{t}({c})" for t, c in top))
         recent = reports[reports["summary"].notna() & (reports["summary"] != "")].head(10)
         if not recent.empty:
             lines.append("\nRECENT THREAT SUMMARIES:")
             for _, row in recent.iterrows():
                 lines.append(
-                    f"  [{row.get('source_feed','?').upper()}] "
-                    f"{row.get('threat_actor','Unknown')}: {str(row.get('summary',''))[:200]}"
+                    f"  [{str(row.get('source_feed','?')).upper()}] "
+                    f"{row.get('threat_actor','?')}: {str(row.get('summary',''))[:200]}"
                 )
-
-    # IOC stats
     if not iocs.empty:
         by_type = iocs.groupby("ioc_type").size().to_dict()
         lines.append("\nIOCS BY TYPE: " + ", ".join(f"{k}={v}" for k, v in by_type.items()))
-        lines.append(f"TOTAL IOCS: {len(iocs)}")
-
-    # CVE stats
     if not cves.empty:
-        kev_count = int((cves["is_kev"] == 1).sum()) if "is_kev" in cves.columns else 0
-        high_cvss = cves[cves["cvss_score"].fillna(0) >= 9.0] if "cvss_score" in cves.columns else pd.DataFrame()
-        lines.append(f"\nCVES TRACKED: {len(cves)}  CISA-KEV: {kev_count}  CVSS>=9: {len(high_cvss)}")
-        # Show a few critical ones
-        if not high_cvss.empty:
-            lines.append("CRITICAL CVEs (CVSS≥9):")
-            for _, row in high_cvss.head(5).iterrows():
-                lines.append(
-                    f"  {row.get('cve_id','?')} CVSS={row.get('cvss_score','?')} "
-                    f"Vendor={row.get('vendor','?')} Product={row.get('product','?')}"
-                )
-
-    # ATT&CK techniques in DB
+        kev = int((cves["is_kev"] == 1).sum()) if "is_kev" in cves else 0
+        crit = int((cves["cvss_score"].fillna(0) >= 9.0).sum()) if "cvss_score" in cves else 0
+        lines.append(f"\nCVES: {len(cves)} total, {kev} CISA-KEV, {crit} CVSS≥9")
+        hi = cves[cves["cvss_score"].fillna(0) >= 9.0].head(5) if "cvss_score" in cves.columns else pd.DataFrame()
+        for _, r in hi.iterrows():
+            lines.append(f"  {r.get('cve_id','?')} CVSS={r.get('cvss_score','?')} {r.get('vendor','?')}/{r.get('product','?')}")
     if not techniques_df.empty:
         lines.append(f"\nMITRE ATT&CK TECHNIQUES IN DB: {len(techniques_df)}")
-
     return "\n".join(lines)
-
-
-def _analyst_ollama(messages: list) -> Optional[str]:
-    try:
-        # Convert OpenAI-style messages to a single prompt for Ollama
-        prompt = "\n\n".join(
-            f"{'Assistant' if m['role'] == 'assistant' else 'User'}: {m['content']}"
-            for m in messages
-        ) + "\n\nAssistant:"
-        resp = _requests.post(
-            f"{_OLLAMA_URL}/api/generate",
-            json={"model": _OLLAMA_MODEL, "prompt": prompt, "stream": False},
-            timeout=120,
-        )
-        resp.raise_for_status()
-        return resp.json().get("response", "").strip() or None
-    except Exception:
-        return None
 
 
 def _analyst_claude(messages: list) -> Optional[str]:
@@ -189,11 +295,11 @@ def _analyst_claude(messages: list) -> Optional[str]:
     try:
         import anthropic
         client = anthropic.Anthropic(api_key=_CLAUDE_KEY)
-        system_msg = messages[0]["content"] if messages and messages[0]["role"] == "system" else ""
-        chat_msgs = [m for m in messages if m["role"] != "system"]
+        system_msg = next((m["content"] for m in messages if m["role"] == "system"), "")
+        chat_msgs  = [m for m in messages if m["role"] != "system"]
         result = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=1024,
+            max_tokens=1500,
             system=system_msg,
             messages=chat_msgs,
         )
@@ -208,7 +314,6 @@ def _analyst_gemini(messages: list) -> Optional[str]:
     try:
         from google import genai
         client = genai.Client(api_key=_GEMINI_KEY)
-        # Flatten to a single string — Gemini 2.0 flash doesn't need turn-by-turn
         combined = "\n\n".join(m["content"] for m in messages)
         result = client.models.generate_content(model="gemini-2.0-flash", contents=combined)
         return result.text.strip() or None
@@ -216,371 +321,641 @@ def _analyst_gemini(messages: list) -> Optional[str]:
         return None
 
 
+def _analyst_ollama(messages: list) -> Optional[str]:
+    try:
+        prompt = "\n\n".join(
+            f"{'Assistant' if m['role'] == 'assistant' else 'User'}: {m['content']}"
+            for m in messages
+        ) + "\n\nAssistant:"
+        resp = _requests.post(
+            f"{_OLLAMA_URL}/api/generate",
+            json={"model": _OLLAMA_MODEL, "prompt": prompt, "stream": False},
+            timeout=15,   # short timeout — Ollama is last resort
+        )
+        resp.raise_for_status()
+        return resp.json().get("response", "").strip() or None
+    except Exception:
+        return None
+
+
 def analyst_reply(messages: list) -> str:
-    """Call LLM backends in order: Ollama → Claude → Gemini."""
-    for fn in (_analyst_ollama, _analyst_claude, _analyst_gemini):
+    """Call backends in order: Claude → Gemini → Ollama."""
+    for fn in (_analyst_claude, _analyst_gemini, _analyst_ollama):
         reply = fn(messages)
         if reply:
             return reply
     return (
-        "⚠️ No AI backend is reachable right now. "
-        "Please configure OLLAMA_URL, CLAUDE_API_KEY, or GEMINI_API_KEY."
+        "⚠️ No AI backend is reachable. "
+        "Set CLAUDE_API_KEY or GEMINI_API_KEY in the server's .env file, "
+        "or run Ollama locally at the configured OLLAMA_URL."
     )
 
 
-# ─── Header ───────────────────────────────────────────────────────────────────
-st.title("🛡️ Threat Intelligence Platform")
-st.caption(
-    f"Live OSINT — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC · "
-    "Auto-refreshes every 30s"
-)
-
+# ─── Load data ────────────────────────────────────────────────────────────────
 reports, iocs, cves, feed_status = load_data()
+techniques_df, mitigations_df = load_attack_data()
 
-# ─── Top metrics ──────────────────────────────────────────────────────────────
-c1, c2, c3, c4, c5 = st.columns(5)
-with c1:
-    st.metric("Threat Reports", len(reports))
-with c2:
-    st.metric("IOCs Tracked", len(iocs))
-with c3:
-    st.metric("CVEs Monitored", len(cves))
-with c4:
-    kev_count = int((cves["is_kev"] == 1).sum()) if not cves.empty and "is_kev" in cves else 0
-    st.metric("CISA KEV", kev_count)
-with c5:
-    active = int((feed_status["status"] == "ok").sum()) if not feed_status.empty else 0
-    total = len(feed_status)
-    st.metric("Active Feeds", f"{active} / {total}")
+# ─── Header ───────────────────────────────────────────────────────────────────
+col_title, col_time = st.columns([3, 1])
+with col_title:
+    st.markdown("## 🛡️ Threat Intelligence Platform")
+with col_time:
+    st.markdown(
+        f"<div style='text-align:right;color:#5d7199;font-size:0.8rem;padding-top:14px'>"
+        f"🕐 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC · live</div>",
+        unsafe_allow_html=True,
+    )
+
+# ─── Top KPI strip ────────────────────────────────────────────────────────────
+k1, k2, k3, k4, k5, k6 = st.columns(6)
+kev_count  = int((cves["is_kev"] == 1).sum()) if not cves.empty and "is_kev" in cves else 0
+crit_cves  = int((cves["cvss_score"].fillna(0) >= 9.0).sum()) if not cves.empty and "cvss_score" in cves else 0
+active_f   = int((feed_status["status"] == "ok").sum()) if not feed_status.empty else 0
+total_f    = len(feed_status)
+ttp_usage  = _ttp_map(reports)
+
+with k1: st.metric("Threat Reports",  f"{len(reports):,}")
+with k2: st.metric("IOCs Tracked",    f"{len(iocs):,}")
+with k3: st.metric("CVEs Monitored",  f"{len(cves):,}")
+with k4: st.metric("CISA KEV",        f"{kev_count:,}")
+with k5: st.metric("CVSS ≥ 9.0",      f"{crit_cves:,}")
+with k6: st.metric("Active Feeds",    f"{active_f} / {total_f}")
 
 st.divider()
 
 # ─── Tabs ─────────────────────────────────────────────────────────────────────
-tab_feed, tab_iocs, tab_cves, tab_attack, tab_analyst, tab_health = st.tabs(
-    ["🚨 Threat Feed", "🔍 IOC Search", "⚠️ CVE Tracker", "🗺️ ATT&CK Mapping", "🤖 AI Analyst", "📊 Feed Health"]
-)
+(tab_dash, tab_feed, tab_actors, tab_iocs,
+ tab_cves, tab_attack, tab_analyst, tab_health) = st.tabs([
+    "📊 Dashboard", "🚨 Threat Feed", "👤 Threat Actors",
+    "🔍 IOC Hunt", "⚠️ CVE Tracker",
+    "🗺️ ATT&CK Mapping", "🤖 AI Analyst", "📡 Feed Health",
+])
 
 
-# ── Threat Feed ───────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# DASHBOARD
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_dash:
+    st.subheader("Executive Overview")
+
+    if reports.empty:
+        st.info("Collector is initialising feeds — check back in a few minutes.")
+    else:
+        row1_l, row1_r = st.columns(2)
+
+        # ── Threat reports by source (bar) ────────────────────────────────────
+        with row1_l:
+            st.markdown("#### Threat Reports by Source")
+            by_src = reports.groupby("source_feed").size().reset_index(name="count")
+            by_src = by_src.sort_values("count", ascending=True)
+            fig = px.bar(
+                by_src, x="count", y="source_feed", orientation="h",
+                color="count",
+                color_continuous_scale=[[0, "#1a3a6a"], [1, "#38bdf8"]],
+                labels={"source_feed": "", "count": "Reports"},
+            )
+            fig.update_coloraxes(showscale=False)
+            fig.update_layout(**_PLOTLY_DARK)
+            fig.update_traces(hovertemplate="%{y}: %{x} reports<extra></extra>")
+            st.plotly_chart(fig, use_container_width=True)
+
+        # ── IOC type distribution (donut) ─────────────────────────────────────
+        with row1_r:
+            st.markdown("#### IOC Type Distribution")
+            if not iocs.empty:
+                by_type = iocs.groupby("ioc_type").size().reset_index(name="count")
+                fig2 = px.pie(
+                    by_type, names="ioc_type", values="count", hole=0.55,
+                    color_discrete_sequence=px.colors.sequential.Blues_r,
+                )
+                fig2.update_layout(**_PLOTLY_DARK, showlegend=True)
+                fig2.update_traces(textposition="outside", textinfo="percent+label",
+                                   hovertemplate="%{label}: %{value:,}<extra></extra>")
+                st.plotly_chart(fig2, use_container_width=True)
+            else:
+                st.info("No IOC data yet.")
+
+        row2_l, row2_r = st.columns(2)
+
+        # ── Confidence score histogram ─────────────────────────────────────────
+        with row2_l:
+            st.markdown("#### Threat Report Confidence Distribution")
+            scores = reports["confidence_score"].dropna()
+            fig3 = px.histogram(
+                scores, nbins=20,
+                color_discrete_sequence=["#38bdf8"],
+                labels={"value": "Confidence Score", "count": "Reports"},
+            )
+            fig3.update_layout(**_PLOTLY_DARK)
+            fig3.update_traces(hovertemplate="Score %{x}: %{y} reports<extra></extra>")
+            st.plotly_chart(fig3, use_container_width=True)
+
+        # ── Top MITRE tactics ─────────────────────────────────────────────────
+        with row2_r:
+            st.markdown("#### Top Observed ATT&CK Tactics")
+            if ttp_usage and not techniques_df.empty:
+                obs = techniques_df[techniques_df["technique_id"].isin(ttp_usage.keys())].copy()
+                obs["count"] = obs["technique_id"].map(lambda t: ttp_usage.get(t, {}).get("count", 0))
+                tac_counts: dict = {}
+                for _, row in obs.iterrows():
+                    for tac in str(row.get("tactic") or "Unknown").split(","):
+                        tac = tac.strip() or "Unknown"
+                        tac_counts[tac] = tac_counts.get(tac, 0) + row["count"]
+                tdf = pd.DataFrame(list(tac_counts.items()), columns=["Tactic", "Count"]).sort_values("Count")
+                fig4 = px.bar(
+                    tdf, x="Count", y="Tactic", orientation="h",
+                    color="Count",
+                    color_continuous_scale=[[0, "#2d1060"], [1, "#b48ef5"]],
+                )
+                fig4.update_coloraxes(showscale=False)
+                fig4.update_layout(**_PLOTLY_DARK)
+                st.plotly_chart(fig4, use_container_width=True)
+            else:
+                st.info("ATT&CK TTP mapping populates as the AI enrichment runs.")
+
+        # ── CVSS severity breakdown ────────────────────────────────────────────
+        if not cves.empty and "cvss_score" in cves.columns:
+            st.markdown("#### CVE Severity Breakdown")
+            def _sev(s):
+                try:
+                    v = float(s)
+                    if v >= 9.0: return "Critical"
+                    if v >= 7.0: return "High"
+                    if v >= 4.0: return "Medium"
+                    return "Low"
+                except Exception:
+                    return "Unknown"
+            cves_copy = cves.copy()
+            cves_copy["severity"] = cves_copy["cvss_score"].apply(_sev)
+            sev_counts = cves_copy["severity"].value_counts().reset_index()
+            sev_counts.columns = ["Severity", "Count"]
+            color_map = {"Critical": "#ff4d6d", "High": "#ff8c42",
+                         "Medium": "#ffd166", "Low": "#06d6a0", "Unknown": "#5d7199"}
+            fig5 = px.bar(
+                sev_counts, x="Severity", y="Count",
+                color="Severity", color_discrete_map=color_map,
+                category_orders={"Severity": ["Critical", "High", "Medium", "Low", "Unknown"]},
+            )
+            fig5.update_layout(**_PLOTLY_DARK, showlegend=False)
+            st.plotly_chart(fig5, use_container_width=True)
+
+        # ── Recent critical events ─────────────────────────────────────────────
+        st.markdown("#### Recent High-Confidence Threats")
+        hi_conf = reports[reports["confidence_score"].fillna(0) >= 70].head(5)
+        if hi_conf.empty:
+            st.info("No high-confidence threats yet.")
+        else:
+            for _, row in hi_conf.iterrows():
+                ts = row["created_at"].strftime("%Y-%m-%d %H:%M") if hasattr(row["created_at"], "strftime") else "?"
+                actor = row.get("threat_actor") or "Unknown"
+                conf  = int(row.get("confidence_score") or 0)
+                feed  = str(row.get("source_feed", "")).upper()
+                summary = str(row.get("summary") or "")
+                st.markdown(
+                    f'<span class="feed-tag">{feed}</span> &nbsp;'
+                    f'<b>{actor}</b> &nbsp; {_severity_badge(conf)} &nbsp;'
+                    f'<span style="color:#5d7199;font-size:0.78rem">{ts} UTC</span><br/>'
+                    f'<span style="font-size:0.85rem;color:#9aabb8">{summary[:180]}</span>',
+                    unsafe_allow_html=True,
+                )
+                st.markdown("---")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# THREAT FEED
+# ══════════════════════════════════════════════════════════════════════════════
 with tab_feed:
     st.subheader("Active Threat Reports")
 
     if reports.empty:
-        st.info("Collector is initializing feeds — check back in a few minutes.")
+        st.info("Collector is initialising feeds — check back in a few minutes.")
     else:
-        col_a, col_b = st.columns(2)
-        with col_a:
-            sources = sorted(reports["source_feed"].dropna().unique().tolist())
-            feed_filter = st.multiselect("Filter by Source", options=sources)
-        with col_b:
-            min_conf = st.slider("Min Confidence Score", 0, 100, 0)
+        fc1, fc2, fc3 = st.columns([2, 2, 1])
+        with fc1:
+            sources  = sorted(reports["source_feed"].dropna().unique().tolist())
+            feed_filter = st.multiselect("Source", options=sources, key="ff_src")
+        with fc2:
+            actors_list = sorted([a for a in reports["threat_actor"].dropna().unique() if a != "Unknown"])
+            actor_filter = st.multiselect("Threat Actor", options=actors_list, key="ff_act")
+        with fc3:
+            min_conf = st.slider("Min Confidence", 0, 100, 0, key="ff_conf")
 
         filtered = reports.copy()
-        if feed_filter:
-            filtered = filtered[filtered["source_feed"].isin(feed_filter)]
-        filtered = filtered[filtered["confidence_score"] >= min_conf]
+        if feed_filter:  filtered = filtered[filtered["source_feed"].isin(feed_filter)]
+        if actor_filter: filtered = filtered[filtered["threat_actor"].isin(actor_filter)]
+        filtered = filtered[filtered["confidence_score"].fillna(0) >= min_conf]
 
         st.caption(f"Showing {min(len(filtered), 50)} of {len(filtered)} reports")
 
         for _, row in filtered.head(50).iterrows():
-            ts = (
-                row["created_at"].strftime("%Y-%m-%d %H:%M")
-                if hasattr(row["created_at"], "strftime")
-                else str(row["created_at"])
-            )
+            ts    = row["created_at"].strftime("%Y-%m-%d %H:%M") if hasattr(row["created_at"], "strftime") else "?"
             actor = row.get("threat_actor") or "Unknown"
-            industry = row.get("target_industry") or "Unknown"
-            conf = int(row.get("confidence_score") or 0)
-            feed = str(row.get("source_feed", "")).upper()
+            conf  = int(row.get("confidence_score") or 0)
+            feed  = str(row.get("source_feed", "")).upper()
+            ttps  = row.get("ttps") or []
+            if isinstance(ttps, str):
+                try: ttps = json.loads(ttps)
+                except Exception: ttps = []
 
-            label = f"[{ts}] [{feed}]  {actor}  →  {industry}  |  Confidence: {conf}%"
+            label = f"[{ts}]  {actor}  ·  {feed}  ·  Confidence {conf}%"
             with st.expander(label):
+                st.markdown(
+                    _severity_badge(conf) + f'&nbsp; <span class="feed-tag">{feed}</span>',
+                    unsafe_allow_html=True,
+                )
                 summary = row.get("summary")
                 if summary:
-                    st.markdown(f"**Summary:** {summary}")
+                    st.markdown(f"> {summary}")
 
                 col_l, col_r = st.columns(2)
                 with col_l:
-                    ttps = row.get("ttps") or []
                     if ttps:
-                        st.markdown("**MITRE TTPs:** " + "  ".join(f"`{t}`" for t in ttps[:6]))
+                        tags = " ".join(f'<span class="ttp-tag">{t}</span>' for t in ttps[:8])
+                        st.markdown(f"**TTPs:** {tags}", unsafe_allow_html=True)
                     cve_list = row.get("associated_cves") or []
+                    if isinstance(cve_list, str):
+                        try: cve_list = json.loads(cve_list)
+                        except Exception: cve_list = []
                     if cve_list:
                         st.markdown("**CVEs:** " + "  ".join(f"`{c}`" for c in cve_list[:5]))
-
                 with col_r:
                     report_iocs = iocs[iocs["report_id"] == row["id"]]
                     if not report_iocs.empty:
                         st.markdown(f"**IOCs ({len(report_iocs)}):**")
-                        display = [c for c in ["ioc_type", "value", "malware_family"] if c in report_iocs.columns]
-                        st.dataframe(report_iocs[display].head(10), use_container_width=True, hide_index=True)
+                        cols = [c for c in ["ioc_type", "value", "malware_family"] if c in report_iocs.columns]
+                        st.dataframe(report_iocs[cols].head(8), use_container_width=True, hide_index=True)
 
                 raw = str(row.get("raw_source") or "")
-                st.code(raw[:600] + ("…" if len(raw) > 600 else ""), language="text")
+                with st.expander("Raw source"):
+                    st.code(raw[:800] + ("…" if len(raw) > 800 else ""), language="text")
 
 
-# ── IOC Search ────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# THREAT ACTORS
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_actors:
+    st.subheader("Threat Actor Profiles")
+
+    if reports.empty:
+        st.info("No threat data yet.")
+    else:
+        # Aggregate by actor
+        actor_data = []
+        for actor, grp in reports[reports["threat_actor"] != "Unknown"].groupby("threat_actor"):
+            all_ttps: set = set()
+            all_cves: set = set()
+            all_feeds: set = set(grp["source_feed"].dropna().tolist())
+            industries: dict = {}
+            for _, row in grp.iterrows():
+                raw_t = row.get("ttps") or []
+                if isinstance(raw_t, str):
+                    try: raw_t = json.loads(raw_t)
+                    except Exception: raw_t = []
+                all_ttps.update(raw_t or [])
+                raw_c = row.get("associated_cves") or []
+                if isinstance(raw_c, str):
+                    try: raw_c = json.loads(raw_c)
+                    except Exception: raw_c = []
+                all_cves.update(raw_c or [])
+                ind = str(row.get("target_industry") or "Unknown")
+                if ind != "Unknown":
+                    industries[ind] = industries.get(ind, 0) + 1
+            actor_data.append({
+                "actor": actor,
+                "reports": len(grp),
+                "avg_conf": int(grp["confidence_score"].fillna(0).mean()),
+                "ttps": sorted(all_ttps),
+                "cves": sorted(all_cves),
+                "feeds": sorted(all_feeds),
+                "industries": industries,
+            })
+
+        actor_data.sort(key=lambda x: -x["reports"])
+
+        if not actor_data:
+            st.info("Actor profiles populate as the AI enrichment runs (may take a few cycles).")
+        else:
+            # Top actors bar chart
+            adf = pd.DataFrame([{"Actor": a["actor"], "Reports": a["reports"],
+                                  "Avg Confidence": a["avg_conf"]} for a in actor_data[:20]])
+            fig_a = px.bar(
+                adf.sort_values("Reports"), x="Reports", y="Actor", orientation="h",
+                color="Avg Confidence",
+                color_continuous_scale=[[0, "#1a3a6a"], [0.5, "#38bdf8"], [1, "#ff4d6d"]],
+                labels={"Actor": "", "Reports": "Report Count"},
+            )
+            fig_a.update_layout(**_PLOTLY_DARK, height=max(250, 30 * len(adf)))
+            st.plotly_chart(fig_a, use_container_width=True)
+
+            st.markdown("#### Actor Details")
+            for a in actor_data:
+                badge = _severity_badge(a["avg_conf"])
+                with st.expander(f"**{a['actor']}** — {a['reports']} report(s)"):
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        st.markdown("**Confidence**")
+                        st.markdown(badge, unsafe_allow_html=True)
+                    with c2:
+                        st.markdown("**Sources**")
+                        for f in a["feeds"]:
+                            st.markdown(f'<span class="feed-tag">{f.upper()}</span>', unsafe_allow_html=True)
+                    with c3:
+                        if a["industries"]:
+                            st.markdown("**Target Industries**")
+                            for ind, cnt in sorted(a["industries"].items(), key=lambda x: -x[1]):
+                                st.caption(f"{ind} ({cnt})")
+
+                    if a["ttps"]:
+                        st.markdown("**Observed TTPs**")
+                        tags = " ".join(f'<span class="ttp-tag">{t}</span>' for t in a["ttps"][:20])
+                        st.markdown(tags, unsafe_allow_html=True)
+
+                    if a["cves"]:
+                        st.markdown("**Associated CVEs**")
+                        st.markdown("  ".join(f"`{c}`" for c in a["cves"][:10]))
+
+                    # IOCs attributed to this actor
+                    actor_reports = reports[reports["threat_actor"] == a["actor"]]
+                    actor_iocs = iocs[iocs["report_id"].isin(actor_reports["id"])]
+                    if not actor_iocs.empty:
+                        st.markdown(f"**IOCs ({min(len(actor_iocs), 20)} shown)**")
+                        cols = [c for c in ["ioc_type", "value", "malware_family"] if c in actor_iocs.columns]
+                        st.dataframe(actor_iocs[cols].head(20), use_container_width=True, hide_index=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# IOC HUNT
+# ══════════════════════════════════════════════════════════════════════════════
 with tab_iocs:
-    st.subheader("IOC Search & Export")
+    st.subheader("IOC Hunt & Enrichment")
 
     if iocs.empty:
         st.info("No IOCs collected yet.")
     else:
-        col_a, col_b = st.columns(2)
-        with col_a:
-            search = st.text_input("Search value (IP, domain, hash, URL…)")
-        with col_b:
+        sc1, sc2, sc3 = st.columns([3, 2, 1])
+        with sc1:
+            search = st.text_input("🔍  Search IP, domain, hash, URL…", key="ioc_search")
+        with sc2:
             ioc_types = sorted(iocs["ioc_type"].dropna().unique().tolist())
-            type_filter = st.multiselect("Filter by Type", options=ioc_types)
+            type_filter = st.multiselect("IOC Type", options=ioc_types, key="ioc_type_f")
+        with sc3:
+            fam_search = st.text_input("Malware Family", key="ioc_fam")
 
-        filtered_iocs = iocs.copy()
+        fi = iocs.copy()
         if search:
-            filtered_iocs = filtered_iocs[
-                filtered_iocs["value"].str.contains(search, case=False, na=False)
-            ]
+            fi = fi[fi["value"].str.contains(search, case=False, na=False)]
         if type_filter:
-            filtered_iocs = filtered_iocs[filtered_iocs["ioc_type"].isin(type_filter)]
+            fi = fi[fi["ioc_type"].isin(type_filter)]
+        if fam_search:
+            fi = fi[fi["malware_family"].str.contains(fam_search, case=False, na=False)]
 
-        st.caption(f"{len(filtered_iocs)} IOCs match")
-        display_cols = [c for c in ["ioc_type", "value", "malware_family", "tags"] if c in filtered_iocs.columns]
-        st.dataframe(filtered_iocs[display_cols].head(500), use_container_width=True, hide_index=True)
+        st.caption(f"{len(fi):,} IOCs match · showing first 200")
 
-        csv = filtered_iocs[display_cols].to_csv(index=False).encode()
+        # Enrichment table with external links
+        if not fi.empty:
+            for _, row in fi.head(200).iterrows():
+                itype = str(row.get("ioc_type", ""))
+                val   = str(row.get("value", ""))
+                fam   = str(row.get("malware_family") or "")
+                links = _enrichment_links(itype, val)
+                st.markdown(
+                    f'<span class="badge-info">{itype}</span> &nbsp;'
+                    f'<span class="ioc-val">{val}</span>'
+                    + (f' &nbsp; <span style="color:#6e7fa3;font-size:0.78rem">({fam})</span>' if fam else "")
+                    + f'<br/><span style="font-size:0.75rem;color:#3d5a80">🔗 {links}</span>',
+                    unsafe_allow_html=True,
+                )
+        st.divider()
+
+        display_cols = [c for c in ["ioc_type", "value", "malware_family", "tags"] if c in fi.columns]
+        csv = fi[display_cols].to_csv(index=False).encode()
         st.download_button("⬇ Export as CSV", csv, "iocs_export.csv", "text/csv")
 
 
-# ── CVE Tracker ───────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# CVE TRACKER
+# ══════════════════════════════════════════════════════════════════════════════
 with tab_cves:
     st.subheader("CVE Tracker")
 
     if cves.empty:
-        st.info("CVE data is loading from CISA KEV and NVD feeds…")
+        st.info("CVE data loading from CISA KEV and NVD feeds…")
     else:
-        col_a, col_b = st.columns(2)
-        with col_a:
-            kev_only = st.checkbox("CISA KEV only", value=False)
-        with col_b:
-            min_cvss = st.slider("Min CVSS Score", 0.0, 10.0, 0.0, 0.1)
+        cc1, cc2, cc3 = st.columns(3)
+        with cc1:
+            kev_only = st.checkbox("CISA KEV only", key="cve_kev")
+        with cc2:
+            min_cvss = st.slider("Min CVSS", 0.0, 10.0, 0.0, 0.1, key="cve_cvss")
+        with cc3:
+            vendor_search = st.text_input("Vendor / Product", key="cve_vendor")
 
-        filtered_cves = cves.copy()
-        if kev_only and "is_kev" in filtered_cves.columns:
-            filtered_cves = filtered_cves[filtered_cves["is_kev"] == 1]
-        if min_cvss > 0 and "cvss_score" in filtered_cves.columns:
-            filtered_cves = filtered_cves[filtered_cves["cvss_score"].fillna(0) >= min_cvss]
+        fc = cves.copy()
+        if kev_only and "is_kev" in fc.columns:
+            fc = fc[fc["is_kev"] == 1]
+        if min_cvss > 0 and "cvss_score" in fc.columns:
+            fc = fc[fc["cvss_score"].fillna(0) >= min_cvss]
+        if vendor_search:
+            mask = (
+                fc["vendor"].str.contains(vendor_search, case=False, na=False) |
+                fc["product"].str.contains(vendor_search, case=False, na=False)
+            )
+            fc = fc[mask]
 
-        display_cols = [
-            c for c in ["cve_id", "cvss_score", "vendor", "product", "cisa_due_date", "is_kev", "description"]
-            if c in filtered_cves.columns
-        ]
+        # CVSS scatter
+        if "cvss_score" in fc.columns and not fc.empty:
+            plot_df = fc[fc["cvss_score"].notna()].copy()
+            if not plot_df.empty:
+                def _sev_label(s):
+                    if s >= 9: return "Critical"
+                    if s >= 7: return "High"
+                    if s >= 4: return "Medium"
+                    return "Low"
+                plot_df["Severity"] = plot_df["cvss_score"].apply(_sev_label)
+                plot_df["label"] = plot_df["cve_id"]
+                fig_c = px.scatter(
+                    plot_df.head(200), x="label", y="cvss_score",
+                    color="Severity",
+                    color_discrete_map={"Critical": "#ff4d6d", "High": "#ff8c42",
+                                        "Medium": "#ffd166", "Low": "#06d6a0"},
+                    hover_data=["vendor", "product"],
+                    labels={"label": "CVE ID", "cvss_score": "CVSS Score"},
+                    size_max=10,
+                )
+                fig_c.update_layout(**_PLOTLY_DARK, height=300,
+                                    xaxis=dict(tickangle=45, tickfont=dict(size=8)))
+                st.plotly_chart(fig_c, use_container_width=True)
+
+        st.caption(f"{len(fc):,} CVEs match")
+        dcols = [c for c in ["cve_id", "cvss_score", "vendor", "product",
+                              "cisa_due_date", "is_kev", "description"] if c in fc.columns]
         st.dataframe(
-            filtered_cves[display_cols].head(200),
-            use_container_width=True,
-            hide_index=True,
+            fc[dcols].head(200),
+            use_container_width=True, hide_index=True,
             column_config={
-                "is_kev": st.column_config.CheckboxColumn("CISA KEV"),
+                "is_kev":     st.column_config.CheckboxColumn("KEV"),
                 "cvss_score": st.column_config.NumberColumn("CVSS", format="%.1f"),
                 "description": st.column_config.TextColumn("Description", width="large"),
             },
         )
+        csv_c = fc[dcols].to_csv(index=False).encode()
+        st.download_button("⬇ Export CVEs as CSV", csv_c, "cves_export.csv", "text/csv")
 
-        csv = filtered_cves[display_cols].to_csv(index=False).encode()
-        st.download_button("⬇ Export CVEs as CSV", csv, "cves_export.csv", "text/csv")
 
-
-# ── ATT&CK Mapping & Remediation ─────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# ATT&CK MAPPING
+# ══════════════════════════════════════════════════════════════════════════════
 with tab_attack:
     st.subheader("MITRE ATT&CK Mapping & Remediation")
 
-    techniques_df, mitigations_df = load_attack_data()
-
     if techniques_df.empty:
-        st.info(
-            "ATT&CK data not yet loaded — the collector populates this on its first "
-            "MITRE ATT&CK cycle (runs once every 24 h). Check back shortly."
-        )
+        st.info("ATT&CK data not loaded yet — collector populates this on its first 24-hour cycle.")
     else:
-        # ── Build TTP usage map from threat reports ────────────────────────────
-        ttp_usage: dict = {}   # technique_id -> {count, actors}
-        for _, row in reports.iterrows():
-            raw_ttps = row.get("ttps") or []
-            if isinstance(raw_ttps, str):
-                try:
-                    raw_ttps = json.loads(raw_ttps)
-                except Exception:
-                    raw_ttps = []
-            actor = str(row.get("threat_actor") or "Unknown")
-            for ttp in (raw_ttps or []):
-                entry = ttp_usage.setdefault(ttp, {"count": 0, "actors": set()})
-                entry["count"] += 1
-                entry["actors"].add(actor)
-
         observed_ids = set(ttp_usage.keys())
-        observed_techniques = techniques_df[techniques_df["technique_id"].isin(observed_ids)].copy()
+        obs_tech = techniques_df[techniques_df["technique_id"].isin(observed_ids)].copy()
 
-        # ── Top metrics ───────────────────────────────────────────────────────
-        m1, m2, m3, m4 = st.columns(4)
-        with m1:
-            st.metric("Techniques in DB", len(techniques_df))
-        with m2:
-            st.metric("Observed in Threats", len(observed_techniques))
-        with m3:
-            unique_tactics = set(
-                t.strip()
-                for tactic_str in observed_techniques["tactic"].dropna()
-                for t in tactic_str.split(",")
-                if t.strip()
-            )
-            st.metric("Tactics Covered", len(unique_tactics))
-        with m4:
-            st.metric("Mitigations Available", len(mitigations_df))
+        am1, am2, am3, am4 = st.columns(4)
+        with am1: st.metric("Techniques in DB", len(techniques_df))
+        with am2: st.metric("Observed in Threats", len(obs_tech))
+        unique_tactics = set(
+            t.strip()
+            for row in obs_tech["tactic"].dropna()
+            for t in str(row).split(",") if t.strip()
+        )
+        with am3: st.metric("Tactics Covered", len(unique_tactics))
+        with am4: st.metric("Mitigations Available", len(mitigations_df))
 
         st.divider()
 
-        # ── Tactic distribution chart ──────────────────────────────────────────
-        if not observed_techniques.empty:
-            st.markdown("#### Threat Activity by ATT&CK Tactic")
-            tactic_counts: dict = {}
-            for _, row in observed_techniques.iterrows():
-                tid = row["technique_id"]
+        # ── ATT&CK heatmap ────────────────────────────────────────────────────
+        if not obs_tech.empty:
+            st.markdown("#### Technique Heat Map by Tactic")
+            rows = []
+            for _, row in obs_tech.iterrows():
+                tid   = row["technique_id"]
                 count = ttp_usage.get(tid, {}).get("count", 0)
-                for tactic in str(row.get("tactic") or "Unknown").split(","):
-                    tactic = tactic.strip() or "Unknown"
-                    tactic_counts[tactic] = tactic_counts.get(tactic, 0) + count
+                for tac in str(row.get("tactic") or "Unknown").split(","):
+                    rows.append({"Technique": tid, "Tactic": tac.strip(), "Count": count,
+                                 "Name": row.get("name", tid)})
+            hdf = pd.DataFrame(rows)
+            if not hdf.empty:
+                fig_h = px.density_heatmap(
+                    hdf, x="Tactic", y="Count", z="Count",
+                    histfunc="sum", color_continuous_scale="Blues",
+                    labels={"Count": "Threat Count"},
+                )
+                fig_h.update_layout(**_PLOTLY_DARK, height=300)
+                st.plotly_chart(fig_h, use_container_width=True)
 
-            tactic_df = (
-                pd.DataFrame(list(tactic_counts.items()), columns=["Tactic", "Threat Count"])
-                .sort_values("Threat Count", ascending=False)
-            )
-            st.bar_chart(tactic_df.set_index("Tactic"))
-            st.divider()
-
-        # ── Observed techniques with remediation drill-down ───────────────────
-        st.markdown("#### Techniques Observed in Threat Reports")
-        if observed_techniques.empty:
-            st.info(
-                "No ATT&CK TTPs extracted yet. TTPs are populated by the AI analyzer "
-                "when processing OTX pulses or other enriched feeds."
-            )
+        # ── Observed techniques ────────────────────────────────────────────────
+        st.markdown("#### Observed Techniques")
+        if obs_tech.empty:
+            st.info("TTPs populate as the AI enrichment runs. Come back after a few collector cycles.")
         else:
-            observed_techniques["threat_count"] = observed_techniques["technique_id"].map(
-                lambda tid: ttp_usage.get(tid, {}).get("count", 0)
+            obs_tech["threat_count"] = obs_tech["technique_id"].map(
+                lambda t: ttp_usage.get(t, {}).get("count", 0)
             )
-            observed_techniques["actors"] = observed_techniques["technique_id"].map(
-                lambda tid: ", ".join(sorted(ttp_usage.get(tid, {}).get("actors", set())))
+            obs_tech["actors"] = obs_tech["technique_id"].map(
+                lambda t: ", ".join(sorted(ttp_usage.get(t, {}).get("actors", set())))
             )
-            observed_techniques = observed_techniques.sort_values("threat_count", ascending=False)
+            obs_tech = obs_tech.sort_values("threat_count", ascending=False)
 
-            for _, tech in observed_techniques.iterrows():
+            for _, tech in obs_tech.iterrows():
                 tid = tech["technique_id"]
-                label = (
+                with st.expander(
                     f"**{tid}** — {tech['name']}  |  "
                     f"Tactic: {tech.get('tactic','?')}  |  "
-                    f"Seen in {tech['threat_count']} report(s)"
-                )
-                with st.expander(label):
-                    col_l, col_r = st.columns([2, 3])
-                    with col_l:
+                    f"Seen {tech['threat_count']}×"
+                ):
+                    cl, cr = st.columns([2, 3])
+                    with cl:
                         st.markdown(f"**Actors:** {tech['actors'] or 'Unknown'}")
                         desc = str(tech.get("description") or "")
-                        st.markdown(f"**Description:** {desc[:600]}{'…' if len(desc) > 600 else ''}")
+                        st.markdown(f"**Description:** {desc[:500]}{'…' if len(desc) > 500 else ''}")
                         st.markdown(
-                            f"[View on MITRE ATT&CK](https://attack.mitre.org/techniques/{tid.replace('.', '/')})",
+                            f"[🔗 MITRE ATT&CK](https://attack.mitre.org/techniques/{tid.replace('.','/')})"
                         )
-                    with col_r:
-                        tech_mits = mitigations_df[mitigations_df["technique_id"] == tid]
-                        if tech_mits.empty:
-                            st.info("No specific mitigations mapped for this technique.")
+                    with cr:
+                        tm = mitigations_df[mitigations_df["technique_id"] == tid]
+                        if tm.empty:
+                            st.info("No specific mitigations mapped.")
                         else:
-                            st.markdown(f"**{len(tech_mits)} MITRE Mitigation(s):**")
-                            for _, mit in tech_mits.iterrows():
+                            st.markdown(f"**{len(tm)} Mitigation(s):**")
+                            for _, mit in tm.iterrows():
                                 with st.container():
-                                    st.markdown(f"🛡️ `{mit['mitigation_id']}` **{mit['name']}**")
-                                    mit_desc = str(mit.get("description") or "")
-                                    st.caption(
-                                        mit_desc[:400] + ("…" if len(mit_desc) > 400 else "")
+                                    st.markdown(
+                                        f'🛡️ <span class="ttp-tag">{mit["mitigation_id"]}</span> '
+                                        f'**{mit["name"]}**',
+                                        unsafe_allow_html=True,
                                     )
+                                    md = str(mit.get("description") or "")
+                                    st.caption(md[:350] + ("…" if len(md) > 350 else ""))
 
         st.divider()
 
-        # ── Full remediation reference lookup ─────────────────────────────────
-        st.markdown("#### Full Remediation Reference")
-        all_tech_options = [
-            f"{row['technique_id']} — {row['name']}"
-            for _, row in techniques_df.iterrows()
-        ]
-        selected = st.selectbox(
-            "Look up any technique",
-            options=["— select —"] + all_tech_options,
-            key="attack_lookup",
-        )
+        # ── Full remediation lookup ────────────────────────────────────────────
+        st.markdown("#### Full Remediation Lookup")
+        options = [f"{r['technique_id']} — {r['name']}" for _, r in techniques_df.iterrows()]
+        selected = st.selectbox("Select any technique", ["— select —"] + options, key="atk_sel")
         if selected and selected != "— select —":
             sel_id = selected.split(" — ")[0]
-            tech_row = techniques_df[techniques_df["technique_id"] == sel_id]
-            if not tech_row.empty:
-                t = tech_row.iloc[0]
-                st.markdown(f"### {t['technique_id']} — {t['name']}")
-                st.markdown(f"**Tactic(s):** {t.get('tactic','Unknown')}")
-                st.markdown("**Description:**")
-                st.markdown(str(t.get("description") or "No description available."))
-                st.markdown(
-                    f"[🔗 MITRE ATT&CK Reference](https://attack.mitre.org/techniques/{sel_id.replace('.', '/')})"
-                )
-                st.divider()
-                tech_mits = mitigations_df[mitigations_df["technique_id"] == sel_id]
-                if tech_mits.empty:
-                    st.info("No mitigations mapped for this technique in the current ATT&CK dataset.")
-                else:
-                    st.markdown(f"#### Recommended Mitigations ({len(tech_mits)})")
-                    for _, mit in tech_mits.iterrows():
-                        with st.expander(f"🛡️ `{mit['mitigation_id']}` {mit['name']}"):
-                            st.markdown(str(mit.get("description") or ""))
-                            st.markdown(
-                                f"[View mitigation on MITRE ATT&CK](https://attack.mitre.org/mitigations/{mit['mitigation_id']})"
-                            )
+            t = techniques_df[techniques_df["technique_id"] == sel_id].iloc[0]
+            st.markdown(f"### {t['technique_id']} — {t['name']}")
+            st.markdown(f"**Tactic(s):** {t.get('tactic','?')}")
+            st.markdown(str(t.get("description") or ""))
+            st.markdown(f"[🔗 MITRE Reference](https://attack.mitre.org/techniques/{sel_id.replace('.','/')})")
+            mits = mitigations_df[mitigations_df["technique_id"] == sel_id]
+            if mits.empty:
+                st.info("No mitigations mapped for this technique.")
+            else:
+                st.markdown(f"#### {len(mits)} Recommended Mitigation(s)")
+                for _, m in mits.iterrows():
+                    with st.expander(f"🛡️ `{m['mitigation_id']}` {m['name']}"):
+                        st.markdown(str(m.get("description") or ""))
+                        st.markdown(
+                            f"[View on MITRE](https://attack.mitre.org/mitigations/{m['mitigation_id']})"
+                        )
 
 
-# ── AI Analyst ────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# AI ANALYST
+# ══════════════════════════════════════════════════════════════════════════════
 with tab_analyst:
     st.subheader("🤖 AI Threat Intelligence Analyst")
-    st.caption(
-        "Ask questions about your threat data in natural language. "
-        "The analyst uses the live database snapshot as context."
-    )
 
-    # Determine which AI backends are available
+    # Backend status
     backends = []
-    if _CLAUDE_KEY:
-        backends.append("Claude")
-    if _GEMINI_KEY:
-        backends.append("Gemini")
-    backends.append("Ollama (local)")   # always listed; may not be running
+    if _CLAUDE_KEY:  backends.append("✅ Claude API")
+    if _GEMINI_KEY:  backends.append("✅ Gemini API")
+    backends.append("⚙️ Ollama (fallback)")
+    st.info("**Active backends (tried in order):** " + "  →  ".join(backends))
 
-    st.info(f"Active backends (tried in order): {' → '.join(backends)}")
+    if not _CLAUDE_KEY and not _GEMINI_KEY:
+        st.warning(
+            "No API keys configured. Add **CLAUDE_API_KEY** or **GEMINI_API_KEY** "
+            "to the server `.env` file and rebuild the webui container."
+        )
 
-    # Initialise conversation history
     if "analyst_messages" not in st.session_state:
         st.session_state.analyst_messages = []
 
-    # Build context once per page load (cached by Streamlit's own run model)
-    techniques_df_ctx, _ = load_attack_data()
-    _ctx = _build_context(reports, iocs, cves, techniques_df_ctx)
+    _ctx = _build_context(reports, iocs, cves, techniques_df)
 
     # Render existing conversation
     for msg in st.session_state.analyst_messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Suggested starter questions
+    # Starter prompts
     if not st.session_state.analyst_messages:
-        st.markdown("**💡 Try asking:**")
+        st.markdown("**💡 Suggested questions:**")
         starters = [
-            "What are the most active threat actors in the database?",
-            "Which MITRE ATT&CK tactics are most commonly observed?",
-            "Show me the most critical CVEs and how to remediate them.",
-            "What malware families are appearing most frequently?",
+            "What are the most active threat actors right now?",
+            "Which ATT&CK tactics are most commonly observed?",
+            "List the critical CVEs and recommended patches.",
+            "What malware families appear most frequently?",
             "Which industries are being targeted the most?",
-            "Summarize the last 24 hours of threat activity.",
-            "What TTPs should I be most concerned about and why?",
+            "What TTPs should I prioritise for detection rules?",
+            "Give me an executive summary of current threats.",
         ]
         cols = st.columns(2)
         for i, q in enumerate(starters):
@@ -588,40 +963,51 @@ with tab_analyst:
                 st.session_state.analyst_messages.append({"role": "user", "content": q})
                 st.rerun()
 
-    # Clear chat button
     if st.session_state.analyst_messages:
-        if st.button("🗑️ Clear conversation", key="clear_chat"):
+        if st.button("🗑️ Clear conversation"):
             st.session_state.analyst_messages = []
             st.rerun()
 
-    # Chat input
-    if user_input := st.chat_input("Ask a question about your threat intelligence…"):
+    if user_input := st.chat_input("Ask anything about your threat intelligence…"):
         st.session_state.analyst_messages.append({"role": "user", "content": user_input})
         with st.chat_message("user"):
             st.markdown(user_input)
 
-        # Build the full messages list for the LLM
         system_content = _ANALYST_SYSTEM.format(context=_ctx)
         llm_messages = [{"role": "system", "content": system_content}]
-        # Include up to the last 10 turns for context
         for m in st.session_state.analyst_messages[-10:]:
             llm_messages.append({"role": m["role"], "content": m["content"]})
 
         with st.chat_message("assistant"):
-            with st.spinner("Analyzing…"):
+            with st.spinner("Analysing…"):
                 reply = analyst_reply(llm_messages)
             st.markdown(reply)
 
         st.session_state.analyst_messages.append({"role": "assistant", "content": reply})
 
 
-# ── Feed Health ───────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# FEED HEALTH
+# ══════════════════════════════════════════════════════════════════════════════
 with tab_health:
     st.subheader("Feed Health & Status")
 
     if feed_status.empty:
         st.info("No feed status yet — collector may still be starting.")
     else:
+        # Summary chart
+        status_counts = feed_status["status"].value_counts().reset_index()
+        status_counts.columns = ["Status", "Count"]
+        color_map_s = {"ok": "#06d6a0", "error": "#ff4d6d",
+                       "running": "#38bdf8", "pending": "#ffd166"}
+        fig_s = px.bar(
+            status_counts, x="Status", y="Count",
+            color="Status", color_discrete_map=color_map_s,
+        )
+        fig_s.update_layout(**_PLOTLY_DARK, height=200, showlegend=False)
+        st.plotly_chart(fig_s, use_container_width=True)
+
+        st.divider()
         for _, row in feed_status.iterrows():
             icon = {"ok": "✅", "error": "❌", "running": "🔄", "pending": "⏳"}.get(
                 str(row.get("status", "")), "❓"
@@ -631,14 +1017,16 @@ with tab_health:
                 if pd.notna(row.get("last_run")) and hasattr(row["last_run"], "strftime")
                 else "Never"
             )
-            col_a, col_b, col_c, col_d = st.columns([2, 3, 1, 4])
-            with col_a:
-                st.markdown(f"{icon} **{str(row['feed_name']).upper()}**")
-            with col_b:
-                st.caption(f"Last run: {last_run}")
-            with col_c:
-                st.caption(f"Total: {int(row.get('total_records') or 0)}")
-            with col_d:
+            last_ok = (
+                row["last_success"].strftime("%Y-%m-%d %H:%M:%S")
+                if pd.notna(row.get("last_success")) and hasattr(row["last_success"], "strftime")
+                else "—"
+            )
+            ca, cb, cc, cd, ce = st.columns([2, 2, 2, 1, 4])
+            with ca: st.markdown(f"{icon} **{str(row['feed_name']).upper()}**")
+            with cb: st.caption(f"Last run: {last_run}")
+            with cc: st.caption(f"Last success: {last_ok}")
+            with cd: st.caption(f"Total: {int(row.get('total_records') or 0):,}")
+            with ce:
                 err = row.get("error_message")
-                if err:
-                    st.caption(f"⚠️ {str(err)[:120]}")
+                if err: st.caption(f"⚠️ {str(err)[:120]}")
