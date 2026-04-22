@@ -974,29 +974,32 @@ with tab_attack:
 with tab_analyst:
     st.subheader("🤖 AI Threat Intelligence Analyst")
 
-    # Backend status — check live availability
-    ollama_ok    = _ollama_up()
-    lmstudio_ok  = _lmstudio_up()
+    # ── Backend status (live health checks) ───────────────────────────────────
+    ollama_ok   = _ollama_up()
+    lmstudio_ok = _lmstudio_up()
 
     chain = []
-    if ollama_ok:
-        chain.append(f"✅ Ollama ({', '.join(_LOCAL_MODELS)})")
-    else:
-        chain.append(f"⚫ Ollama (unreachable — {', '.join(_LOCAL_MODELS)})")
+    # Show exactly what was loaded from the env so the user can verify
+    model_list = ", ".join(_LOCAL_MODELS)
+    chain.append(
+        (f"✅ Ollama [{model_list}]" if ollama_ok else f"⚫ Ollama offline [{model_list}]")
+    )
     if _LMSTUDIO_URL:
-        chain.append(("✅" if lmstudio_ok else "⚫") + f" LM Studio ({_LMSTUDIO_MDL})")
+        chain.append(("✅" if lmstudio_ok else "⚫") + f" LM Studio [{_LMSTUDIO_MDL}]")
     if _CLAUDE_KEY:
-        chain.append("☁️ Claude API (fallback)")
+        chain.append("☁️ Claude (fallback)")
     if _GEMINI_KEY:
-        chain.append("☁️ Gemini API (fallback)")
+        chain.append("☁️ Gemini (fallback)")
 
-    st.info("**Backend chain (local first):** " + "  →  ".join(chain))
+    st.info("**AI chain (local first):** " + "  →  ".join(chain))
 
-    if not ollama_ok and not lmstudio_ok and not _CLAUDE_KEY and not _GEMINI_KEY:
-        st.warning(
-            "No AI backend is reachable. "
-            "Set **OLLAMA_MODELS** in `.env` (e.g. `llama3.2,mistral,phi3`) "
-            "and ensure Ollama is running, or add a cloud API key as fallback."
+    any_backend = ollama_ok or lmstudio_ok or bool(_CLAUDE_KEY) or bool(_GEMINI_KEY)
+    if not any_backend:
+        st.error(
+            "**No AI backend reachable.** "
+            "Add `OLLAMA_MODELS=modelname` to `/opt/threat-intel-platform/.env` "
+            "and run `sudo docker compose up -d` on the server, "
+            "or set `CLAUDE_API_KEY` / `GEMINI_API_KEY` as a cloud fallback."
         )
 
     if "analyst_messages" not in st.session_state:
@@ -1004,12 +1007,7 @@ with tab_analyst:
 
     _ctx = _build_context(reports, iocs, cves, techniques_df)
 
-    # Render existing conversation
-    for msg in st.session_state.analyst_messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-
-    # Starter prompts
+    # ── Starter question buttons (shown only on empty conversation) ───────────
     if not st.session_state.analyst_messages:
         st.markdown("**💡 Suggested questions:**")
         starters = [
@@ -1024,30 +1022,45 @@ with tab_analyst:
         cols = st.columns(2)
         for i, q in enumerate(starters):
             if cols[i % 2].button(q, key=f"starter_{i}", use_container_width=True):
+                # Store the question; the response logic below will pick it up
                 st.session_state.analyst_messages.append({"role": "user", "content": q})
                 st.rerun()
 
-    if st.session_state.analyst_messages:
-        if st.button("🗑️ Clear conversation"):
-            st.session_state.analyst_messages = []
-            st.rerun()
+    # ── Render conversation history ────────────────────────────────────────────
+    for msg in st.session_state.analyst_messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
-    if user_input := st.chat_input("Ask anything about your threat intelligence…"):
-        st.session_state.analyst_messages.append({"role": "user", "content": user_input})
-        with st.chat_message("user"):
-            st.markdown(user_input)
-
+    # ── Generate a response if the last message is from the user ─────────────
+    # This handles BOTH chat_input submissions AND starter button clicks
+    # (starter buttons rerun the page with a pending user message but no reply).
+    needs_reply = (
+        bool(st.session_state.analyst_messages)
+        and st.session_state.analyst_messages[-1]["role"] == "user"
+    )
+    if needs_reply and any_backend:
         system_content = _ANALYST_SYSTEM.format(context=_ctx)
         llm_messages = [{"role": "system", "content": system_content}]
         for m in st.session_state.analyst_messages[-10:]:
             llm_messages.append({"role": m["role"], "content": m["content"]})
 
         with st.chat_message("assistant"):
-            with st.spinner("Analysing…"):
+            with st.spinner("Analysing threat data…"):
                 reply = analyst_reply(llm_messages)
             st.markdown(reply)
 
         st.session_state.analyst_messages.append({"role": "assistant", "content": reply})
+
+    # ── Chat input for follow-up questions ────────────────────────────────────
+    if user_input := st.chat_input("Ask anything about your threat intelligence…"):
+        st.session_state.analyst_messages.append({"role": "user", "content": user_input})
+        st.rerun()   # rerun so the message renders, then needs_reply fires above
+
+    # ── Clear button ──────────────────────────────────────────────────────────
+    if st.session_state.analyst_messages:
+        if st.button("🗑️ Clear conversation", key="clear_analyst"):
+            st.session_state.analyst_messages = []
+            st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
