@@ -638,7 +638,7 @@ with tab_feed:
                         st.dataframe(report_iocs[cols].head(8), use_container_width=True, hide_index=True)
 
                 raw = str(row.get("raw_source") or "")
-                with st.expander("Raw source"):
+                if st.toggle("Show raw source", key=f"raw_{row['id']}"):
                     st.code(raw[:800] + ("…" if len(raw) > 800 else ""), language="text")
 
 
