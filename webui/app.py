@@ -2471,11 +2471,17 @@ with tab_admin:
                 _ak_id = _ak.get("id")
                 _ak_col, _ak_del_col = st.columns([10, 1])
                 with _ak_col:
+                    _ak_name = _ak["name"]
+                    _ak_status_badge = (
+                        "&nbsp;<span class='badge-low'>ACTIVE</span>"
+                        if _ak_active else
+                        "&nbsp;<span class='badge-medium'>REVOKED</span>"
+                    )
                     st.markdown(
                         f'<div style="background:#0c1628;border:1px solid #142038;border-radius:8px;padding:10px 16px;margin-bottom:5px;">'
-                        f'<span style="font-weight:700;color:#c8d8f0;">{_ak["name"]}</span>'
+                        f'<span style="font-weight:700;color:#c8d8f0;">{_ak_name}</span>'
                         f'&nbsp;&nbsp;<span class="feed-tag">{_perms}</span>'
-                        f'{"&nbsp;<span class=\'badge-low\'>ACTIVE</span>" if _ak_active else "&nbsp;<span class=\'badge-medium\'>REVOKED</span>"}'
+                        f'{_ak_status_badge}'
                         f'<span style="float:right;font-size:0.72rem;color:#3d5a80;">Created {_ca_str} &nbsp;·&nbsp; Last used: {_lu_str}</span>'
                         f'</div>',
                         unsafe_allow_html=True,
