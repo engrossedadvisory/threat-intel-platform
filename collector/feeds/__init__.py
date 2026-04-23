@@ -6,6 +6,9 @@ from .nvd import NVDFeed
 from .mitre_attack import MITREAttackFeed
 from .otx import OTXFeed
 from .darkweb_tor import DarkWebFeed
+from .cert_transparency import CertTransparencyFeed
+from .rss_feeds import SecurityRSSFeed
+from .github_monitor import GithubMonitorFeed
 
 ALL_FEEDS = [
     CISAKEVFeed(),
@@ -15,5 +18,8 @@ ALL_FEEDS = [
     NVDFeed(),
     MITREAttackFeed(),
     OTXFeed(),
-    DarkWebFeed(),   # always registered; configure() controls enablement at runtime
+    DarkWebFeed(),         # always registered; configure() controls enablement at runtime
+    CertTransparencyFeed(),
+    SecurityRSSFeed(),
+    GithubMonitorFeed(),
 ]

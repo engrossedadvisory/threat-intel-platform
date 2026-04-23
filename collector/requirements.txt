@@ -6,3 +6,6 @@ google-genai
 beautifulsoup4==4.12.3
 PySocks==1.7.1
 lxml==5.3.0
+feedparser==6.0.11
+shodan==1.31.0
+# ipaddress is part of the Python standard library — no separate pin needed

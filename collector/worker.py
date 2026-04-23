@@ -5,6 +5,10 @@ from sqlalchemy.orm import Session
 from models import SessionLocal, ThreatReport, IOC, CVERecord, FeedStatus, MITRETechnique, MITREMitigation
 from feeds import ALL_FEEDS
 from analyzer import analyze
+from enrichment import enrich_batch
+from alerter import process_pending_alerts
+from watchlist_checker import check_all_new_iocs
+from decay import apply_decay
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -336,6 +340,92 @@ def _process_darkweb(db: Session, items: list) -> int:
     return saved
 
 
+def _process_rss(db: Session, items: list) -> int:
+    """Process RSS feed items — deduplicate by URL fingerprint, AI-enrich, store as ThreatReports."""
+    saved = 0
+    for item in items:
+        fp = item.get("fingerprint", "")
+        source_url = item.get("url", "")
+        if not fp or db.query(ThreatReport).filter_by(source_id=f"rss_{fp[:50]}").first():
+            continue
+        raw_text = f"{item.get('title', '')}. {item.get('content', '')[:3000]}"
+        intel = analyze(raw_text) or {}
+        report = ThreatReport(
+            source_feed="rss_feeds",
+            source_id=f"rss_{fp[:50]}",
+            threat_actor=intel.get("threat_actor", "Unknown"),
+            target_industry=intel.get("target_industry", "Unknown"),
+            ttps=intel.get("ttps", []),
+            associated_cves=intel.get("associated_cves", []),
+            confidence_score=intel.get("confidence_score", 40),
+            summary=intel.get("summary", item.get("title", ""))[:500],
+            raw_source=raw_text[:2000],
+        )
+        db.add(report)
+        saved += 1
+    db.commit()
+    return saved
+
+
+def _process_cert_transparency(db: Session, items: list) -> int:
+    """Persist CT log entries and create watchlist hits for matching domains."""
+    from models import CertMention, WatchedAsset, WatchlistHit
+    import hashlib
+    saved = 0
+    for item in items:
+        fp = item.get("fingerprint", "")
+        if not fp or db.query(CertMention).filter_by(fingerprint=fp).first():
+            continue
+        asset = db.query(WatchedAsset).filter_by(value=item.get("domain_matched", "")).first()
+        cert = CertMention(
+            watched_asset_id=asset.id if asset else None,
+            domain_matched=item.get("domain_matched", "")[:200],
+            common_name=item.get("common_name", "")[:500],
+            issuer=item.get("issuer", "")[:200],
+            fingerprint=fp,
+        )
+        db.add(cert)
+        db.flush()
+        if asset:
+            hit_fp = hashlib.sha256(f"cert|{asset.id}|{fp}".encode()).hexdigest()[:64]
+            if not db.query(WatchlistHit).filter_by(fingerprint=hit_fp).first():
+                db.add(WatchlistHit(
+                    watched_asset_id=asset.id,
+                    hit_type="cert",
+                    severity="medium",
+                    source_feed="cert_transparency",
+                    matched_value=item.get("common_name", "")[:500],
+                    context=f"New certificate issued by {item.get('issuer', 'Unknown')}",
+                    fingerprint=hit_fp,
+                ))
+        saved += 1
+    db.commit()
+    return saved
+
+
+def _process_github(db: Session, items: list) -> int:
+    """Persist GitHub findings and create high-severity watchlist hits."""
+    from models import GithubFinding, WatchedAsset, WatchlistHit
+    import hashlib
+    saved = 0
+    for item in items:
+        fp = item.get("fingerprint", "")
+        if not fp or db.query(GithubFinding).filter_by(fingerprint=fp).first():
+            continue
+        db.add(GithubFinding(
+            repo_full_name=item.get("repo_full_name", "")[:500],
+            file_path=item.get("file_path", "")[:500],
+            keyword_matched=item.get("keyword_matched", "")[:200],
+            snippet=item.get("snippet", "")[:1000],
+            severity=item.get("severity", "high"),
+            github_url=item.get("github_url", "")[:500],
+            fingerprint=fp,
+        ))
+        saved += 1
+    db.commit()
+    return saved
+
+
 _PROCESSORS = {
     "cisa_kev": _process_cisa_kev,
     "threatfox": _process_threatfox,
@@ -345,6 +435,9 @@ _PROCESSORS = {
     "mitre_attack": _process_mitre_attack,
     "otx": _process_otx,
     "darkweb": _process_darkweb,
+    "rss_feeds": _process_rss,
+    "cert_transparency": _process_cert_transparency,
+    "github_monitor": _process_github,
 }
 
 
@@ -457,6 +550,30 @@ def main():
 
             # After feeds, run AI enrichment on un-analyzed reports
             _enrich_missing_ttps(db, batch_size=10)
+
+            # IOC enrichment (VirusTotal, GreyNoise, Shodan)
+            try:
+                enrich_batch(db, batch_size=10)
+            except Exception as e:
+                log.debug(f"[enrichment] skipped: {e}")
+
+            # Check new IOCs against watchlist
+            try:
+                check_all_new_iocs(db)
+            except Exception as e:
+                log.debug(f"[watchlist] skipped: {e}")
+
+            # Send pending alerts
+            try:
+                process_pending_alerts(db)
+            except Exception as e:
+                log.debug(f"[alerter] skipped: {e}")
+
+            # Apply IOC decay (runs internally only once per 24h)
+            try:
+                apply_decay(db)
+            except Exception as e:
+                log.debug(f"[decay] skipped: {e}")
         finally:
             db.close()
         time.sleep(30)

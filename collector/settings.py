@@ -25,6 +25,17 @@ _ENV_FALLBACKS: dict[str, str] = {
     "dark_web_keywords":      os.getenv("DARK_WEB_KEYWORDS",       ""),
     "dark_web_onion_sources": os.getenv("DARK_WEB_ONION_SOURCES",  ""),
     "dark_web_interval":      os.getenv("DARK_WEB_INTERVAL",       "21600"),
+    "enrichment_vt_key":      os.getenv("VT_API_KEY",          ""),
+    "enrichment_gn_key":      os.getenv("GREYNOISE_API_KEY",    ""),
+    "enrichment_shodan_key":  os.getenv("SHODAN_API_KEY",       ""),
+    "github_token":           os.getenv("GITHUB_TOKEN",         ""),
+    "alert_email_enabled":    "false",
+    "smtp_host":              os.getenv("SMTP_HOST",            ""),
+    "smtp_port":              os.getenv("SMTP_PORT",            "587"),
+    "smtp_user":              os.getenv("SMTP_USER",            ""),
+    "smtp_pass":              os.getenv("SMTP_PASS",            ""),
+    "alert_from_email":       os.getenv("ALERT_FROM_EMAIL",     ""),
+    "alert_to_email":         os.getenv("ALERT_TO_EMAIL",       ""),
 }
 
 

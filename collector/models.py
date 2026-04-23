@@ -2,7 +2,7 @@ import os
 from datetime import datetime, timezone
 from sqlalchemy import (
     create_engine, Column, Integer, String, Text,
-    Float, ForeignKey, DateTime, JSON,
+    Float, ForeignKey, DateTime, JSON, Boolean,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
@@ -134,6 +134,107 @@ class PlatformSettings(Base):
                         default=lambda: datetime.now(timezone.utc),
                         onupdate=lambda: datetime.now(timezone.utc))
     updated_by = Column(String(100), default="admin")
+
+
+class WatchedAsset(Base):
+    """Assets belonging to the organisation that should be monitored across all feeds."""
+    __tablename__ = "watched_assets"
+    id         = Column(Integer, primary_key=True, index=True)
+    asset_type = Column(String(50), index=True)   # domain, ip, cidr, email_domain, keyword
+    value      = Column(String(500))
+    label      = Column(String(200))              # human-readable description
+    active     = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+class WatchlistHit(Base):
+    """Records when a watched asset appears in a feed or enrichment result."""
+    __tablename__ = "watchlist_hits"
+    id               = Column(Integer, primary_key=True, index=True)
+    watched_asset_id = Column(Integer, ForeignKey("watched_assets.id"), index=True)
+    hit_type         = Column(String(50))    # ioc_match, dark_web, cert, github, paste
+    severity         = Column(String(20), default="high")
+    source_feed      = Column(String(100))
+    matched_value    = Column(String(500))
+    context          = Column(Text)          # sanitised snippet
+    alerted          = Column(Boolean, default=False)
+    fingerprint      = Column(String(64), unique=True, index=True)
+    found_at         = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+class AlertChannel(Base):
+    """Notification channels for watchlist hits."""
+    __tablename__ = "alert_channels"
+    id           = Column(Integer, primary_key=True, index=True)
+    channel_type = Column(String(50))   # slack, teams, email
+    label        = Column(String(200))
+    config       = Column(JSON)         # {webhook_url, to_email, smtp_*}
+    min_severity = Column(String(20), default="medium")
+    active       = Column(Boolean, default=True)
+
+class IOCEnrichment(Base):
+    """VirusTotal / GreyNoise / Shodan enrichment results per IOC."""
+    __tablename__ = "ioc_enrichments"
+    id          = Column(Integer, primary_key=True, index=True)
+    ioc_value   = Column(String(512), index=True)
+    ioc_type    = Column(String(50))
+    source      = Column(String(50))    # virustotal, greynoise, shodan
+    score       = Column(Float)         # 0-100 maliciousness
+    verdict     = Column(String(50))    # malicious, suspicious, benign, noise
+    raw_data    = Column(JSON)
+    enriched_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+class CertMention(Base):
+    """Certificate Transparency log entries for monitored domains."""
+    __tablename__ = "cert_mentions"
+    id               = Column(Integer, primary_key=True, index=True)
+    watched_asset_id = Column(Integer, ForeignKey("watched_assets.id"), index=True)
+    domain_matched   = Column(String(200))
+    common_name      = Column(String(500))
+    issuer           = Column(String(200))
+    not_before       = Column(DateTime(timezone=True))
+    not_after        = Column(DateTime(timezone=True))
+    fingerprint      = Column(String(64), unique=True, index=True)
+    found_at         = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+class GithubFinding(Base):
+    """GitHub secret/credential scan results."""
+    __tablename__ = "github_findings"
+    id              = Column(Integer, primary_key=True, index=True)
+    repo_full_name  = Column(String(500))
+    file_path       = Column(String(500))
+    keyword_matched = Column(String(200))
+    snippet         = Column(Text)       # sanitised — no actual credentials
+    severity        = Column(String(20), default="high")
+    github_url      = Column(String(500))
+    fingerprint     = Column(String(64), unique=True, index=True)
+    found_at        = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+class Campaign(Base):
+    """Grouped threat activity attributed to a single actor or operation."""
+    __tablename__ = "campaigns"
+    id           = Column(Integer, primary_key=True, index=True)
+    name         = Column(String(200), unique=True)
+    threat_actor = Column(String(200))
+    description  = Column(Text)
+    status       = Column(String(50), default="active")   # active, historical
+    confidence   = Column(Integer, default=50)
+    first_seen   = Column(DateTime(timezone=True))
+    last_seen    = Column(DateTime(timezone=True))
+    report_ids   = Column(JSON, default=list)
+    ioc_ids      = Column(JSON, default=list)
+    ttps         = Column(JSON, default=list)
+    created_at   = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+class APIKey(Base):
+    """API keys for the REST API — stored as SHA-256 hashes."""
+    __tablename__ = "api_keys"
+    id          = Column(Integer, primary_key=True, index=True)
+    key_hash    = Column(String(64), unique=True, index=True)
+    key_prefix  = Column(String(8))     # first 8 chars shown in UI (e.g. "vntl_abc")
+    label       = Column(String(200))
+    permissions = Column(JSON, default=list)   # ["read","write","taxii","admin"]
+    active      = Column(Boolean, default=True)
+    last_used   = Column(DateTime(timezone=True))
+    created_at  = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 Base.metadata.create_all(bind=engine)
