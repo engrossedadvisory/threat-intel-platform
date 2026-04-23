@@ -2,6 +2,8 @@ networks:
   db_net:
     internal: true
   app_net:
+  tor_net:
+    internal: true
 
 services:
   db:
@@ -97,7 +99,3 @@ services:
 
 volumes:
   pgdata:
-
-networks:
-  tor_net:
-    internal: true
