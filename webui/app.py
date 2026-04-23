@@ -512,17 +512,21 @@ def load_watchlist_data():
     """Load watched assets and recent hits."""
     engine = get_engine()
     try:
-        from sqlalchemy import text
-        with engine.connect() as conn:
-            assets = pd.read_sql(
-                "SELECT * FROM watched_assets ORDER BY created_at DESC", engine
-            )
-            hits = pd.read_sql(
-                """SELECT wh.*, wa.asset_value, wa.asset_type, wa.label
-                   FROM watchlist_hits wh
-                   JOIN watched_assets wa ON wh.asset_id = wa.id
-                   ORDER BY wh.hit_at DESC LIMIT 500""", engine
-            )
+        assets = pd.read_sql(
+            "SELECT * FROM watched_assets ORDER BY created_at DESC", engine
+        )
+        hits = pd.read_sql(
+            """SELECT wh.id, wh.watched_asset_id, wh.hit_type, wh.severity,
+                      wh.source_feed, wh.matched_value, wh.context,
+                      wh.alerted, wh.found_at,
+                      wa.value  AS asset_value,
+                      wa.asset_type,
+                      wa.label
+               FROM watchlist_hits wh
+               JOIN watched_assets wa ON wh.watched_asset_id = wa.id
+               ORDER BY wh.found_at DESC LIMIT 500""",
+            engine,
+        )
         return assets, hits
     except Exception:
         return pd.DataFrame(), pd.DataFrame()
@@ -552,10 +556,10 @@ def load_enrichment_map(ioc_values: tuple) -> dict:
         params = {f"v{i}": v for i, v in enumerate(ioc_values)}
         with engine.connect() as conn:
             rows = conn.execute(
-                text(f"SELECT * FROM ioc_enrichment WHERE ioc_value IN ({placeholders})"),
+                text(f"SELECT * FROM ioc_enrichments WHERE ioc_value IN ({placeholders})"),
                 params,
             ).fetchall()
-        return {r[1]: dict(r._mapping) for r in rows}   # ioc_value → row
+        return {r._mapping["ioc_value"]: dict(r._mapping) for r in rows}
     except Exception:
         return {}
 
@@ -973,127 +977,272 @@ st.divider()
 with tab_dash:
     st.markdown('<p class="section-label"><i class="bi bi-grid-3x3-gap-fill bi-sm"></i>&nbsp; Executive Overview</p>', unsafe_allow_html=True)
 
-    if reports.empty:
+    if reports.empty and iocs.empty and cves.empty:
         st.info("Collector is initialising feeds — check back in a few minutes.")
     else:
-        row1_l, row1_r = st.columns(2)
+        # ── Row 1: Threat velocity timeline + IOC type donut ─────────────────
+        row1_l, row1_r = st.columns([3, 2])
 
-        # ── Threat reports by source (bar) ────────────────────────────────────
         with row1_l:
-            st.markdown("#### Threat Reports by Source")
-            by_src = reports.groupby("source_feed").size().reset_index(name="count")
-            by_src = by_src.sort_values("count", ascending=True)
-            fig = px.bar(
-                by_src, x="count", y="source_feed", orientation="h",
-                color="count",
-                color_continuous_scale=[[0, "#1a3a6a"], [1, "#38bdf8"]],
-                labels={"source_feed": "", "count": "Reports"},
-            )
-            fig.update_coloraxes(showscale=False)
-            fig.update_layout(**_PLOTLY_DARK)
-            fig.update_traces(hovertemplate="%{y}: %{x} reports<extra></extra>")
-            st.plotly_chart(fig, use_container_width=True)
+            st.markdown("#### Threat Ingestion Timeline (30 days)")
+            if not reports.empty and "created_at" in reports.columns:
+                _tl = reports.copy()
+                _tl["date"] = pd.to_datetime(_tl["created_at"], utc=True, errors="coerce").dt.floor("D")
+                _tl = _tl[_tl["date"] >= (pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=30))]
+                _tl_grp = _tl.groupby(["date", "source_feed"]).size().reset_index(name="count")
+                if not _tl_grp.empty:
+                    fig_tl = px.area(
+                        _tl_grp, x="date", y="count", color="source_feed",
+                        labels={"date": "", "count": "Reports", "source_feed": "Feed"},
+                        color_discrete_sequence=px.colors.qualitative.Bold,
+                    )
+                    fig_tl.update_layout(**_PLOTLY_DARK, height=240, showlegend=True,
+                                         legend=dict(orientation="h", y=-0.25))
+                    fig_tl.update_traces(hovertemplate="%{x|%b %d}: %{y}<extra>%{fullData.name}</extra>")
+                    st.plotly_chart(fig_tl, use_container_width=True)
+                else:
+                    st.info("No timeline data in last 30 days.")
+            else:
+                st.info("No threat report data yet.")
 
-        # ── IOC type distribution (donut) ─────────────────────────────────────
         with row1_r:
             st.markdown("#### IOC Type Distribution")
             if not iocs.empty:
                 by_type = iocs.groupby("ioc_type").size().reset_index(name="count")
                 fig2 = px.pie(
                     by_type, names="ioc_type", values="count", hole=0.55,
-                    color_discrete_sequence=px.colors.sequential.Blues_r,
+                    color_discrete_sequence=["#38bdf8","#818cf8","#c084fc","#fb923c","#34d399","#f87171"],
                 )
-                fig2.update_layout(**_PLOTLY_DARK, showlegend=True)
-                fig2.update_traces(textposition="outside", textinfo="percent+label",
-                                   hovertemplate="%{label}: %{value:,}<extra></extra>")
+                fig2.update_layout(**_PLOTLY_DARK, height=240, showlegend=True,
+                                    legend=dict(orientation="h", y=-0.25))
+                fig2.update_traces(textposition="inside", textinfo="percent",
+                                   hovertemplate="<b>%{label}</b><br>%{value:,} IOCs (%{percent})<extra></extra>")
+                # Drill-down hint
                 st.plotly_chart(fig2, use_container_width=True)
+                _top_ioc_type = by_type.sort_values("count", ascending=False).iloc[0]["ioc_type"] if not by_type.empty else ""
+                st.caption(f"Largest category: **{_top_ioc_type}** — click ⊙ IOC Hunt to filter")
             else:
                 st.info("No IOC data yet.")
 
+        st.divider()
+
+        # ── Row 2: Threat actor bar + ATT&CK tactics ─────────────────────────
         row2_l, row2_r = st.columns(2)
 
-        # ── Confidence score histogram ─────────────────────────────────────────
         with row2_l:
-            st.markdown("#### Threat Report Confidence Distribution")
-            scores = reports["confidence_score"].dropna()
-            fig3 = px.histogram(
-                scores, nbins=20,
-                color_discrete_sequence=["#38bdf8"],
-                labels={"value": "Confidence Score", "count": "Reports"},
-            )
-            fig3.update_layout(**_PLOTLY_DARK)
-            fig3.update_traces(hovertemplate="Score %{x}: %{y} reports<extra></extra>")
-            st.plotly_chart(fig3, use_container_width=True)
+            st.markdown("#### Top Threat Actors by Report Count")
+            if not reports.empty:
+                _actor_counts = (
+                    reports[reports["threat_actor"].notna() & (reports["threat_actor"] != "Unknown")]
+                    .groupby("threat_actor").agg(
+                        Reports=("id", "count"),
+                        Avg_Conf=("confidence_score", "mean"),
+                    ).reset_index().sort_values("Reports", ascending=True).tail(15)
+                )
+                if not _actor_counts.empty:
+                    fig_a = px.bar(
+                        _actor_counts, x="Reports", y="threat_actor", orientation="h",
+                        color="Avg_Conf",
+                        color_continuous_scale=[[0,"#1a3a6a"],[0.5,"#38bdf8"],[1,"#ff4d6d"]],
+                        labels={"threat_actor": "", "Reports": "Reports", "Avg_Conf": "Avg Confidence"},
+                        custom_data=["Avg_Conf"],
+                    )
+                    fig_a.update_coloraxes(showscale=False)
+                    fig_a.update_layout(**_PLOTLY_DARK, height=320)
+                    fig_a.update_traces(
+                        hovertemplate="<b>%{y}</b><br>%{x} reports · Avg conf: %{customdata[0]:.0f}%<extra></extra>"
+                    )
+                    st.plotly_chart(fig_a, use_container_width=True)
+                    st.caption("Click ⬡ Actors tab for full profiles with TTPs, CVEs, and IOC attribution")
+                else:
+                    st.info("Actor data populates as AI enrichment runs.")
+            else:
+                st.info("No report data yet.")
 
-        # ── Top MITRE tactics ─────────────────────────────────────────────────
         with row2_r:
             st.markdown("#### Top Observed ATT&CK Tactics")
             if ttp_usage and not techniques_df.empty:
                 obs = techniques_df[techniques_df["technique_id"].isin(ttp_usage.keys())].copy()
-                obs["count"] = obs["technique_id"].map(lambda t: ttp_usage.get(t, {}).get("count", 0))
+                obs["count"] = obs["technique_id"].map(
+                    lambda t: ttp_usage.get(t, {}).get("count", 0) if isinstance(ttp_usage.get(t), dict) else ttp_usage.get(t, 0)
+                )
                 tac_counts: dict = {}
-                for _, row in obs.iterrows():
-                    for tac in str(row.get("tactic") or "Unknown").split(","):
+                for _, _r in obs.iterrows():
+                    for tac in str(_r.get("tactic") or "Unknown").split(","):
                         tac = tac.strip() or "Unknown"
-                        tac_counts[tac] = tac_counts.get(tac, 0) + row["count"]
+                        tac_counts[tac] = tac_counts.get(tac, 0) + _r["count"]
                 tdf = pd.DataFrame(list(tac_counts.items()), columns=["Tactic", "Count"]).sort_values("Count")
                 fig4 = px.bar(
                     tdf, x="Count", y="Tactic", orientation="h",
                     color="Count",
-                    color_continuous_scale=[[0, "#2d1060"], [1, "#b48ef5"]],
+                    color_continuous_scale=[[0,"#2d1060"],[0.5,"#7c3aed"],[1,"#c084fc"]],
                 )
                 fig4.update_coloraxes(showscale=False)
-                fig4.update_layout(**_PLOTLY_DARK)
+                fig4.update_layout(**_PLOTLY_DARK, height=320)
+                fig4.update_traces(hovertemplate="<b>%{y}</b>: %{x} observations<extra></extra>")
                 st.plotly_chart(fig4, use_container_width=True)
+                st.caption("Click ⬢ ATT&CK tab for technique-level detail with mitigations")
             else:
                 st.info("ATT&CK TTP mapping populates as the AI enrichment runs.")
 
-        # ── CVSS severity breakdown ────────────────────────────────────────────
-        if not cves.empty and "cvss_score" in cves.columns:
-            st.markdown("#### CVE Severity Breakdown")
-            def _sev(s):
-                try:
-                    v = float(s)
-                    if v >= 9.0: return "Critical"
-                    if v >= 7.0: return "High"
-                    if v >= 4.0: return "Medium"
-                    return "Low"
-                except Exception:
-                    return "Unknown"
-            cves_copy = cves.copy()
-            cves_copy["severity"] = cves_copy["cvss_score"].apply(_sev)
-            sev_counts = cves_copy["severity"].value_counts().reset_index()
-            sev_counts.columns = ["Severity", "Count"]
-            color_map = {"Critical": "#ff4d6d", "High": "#ff8c42",
-                         "Medium": "#ffd166", "Low": "#06d6a0", "Unknown": "#5d7199"}
-            fig5 = px.bar(
-                sev_counts, x="Severity", y="Count",
-                color="Severity", color_discrete_map=color_map,
-                category_orders={"Severity": ["Critical", "High", "Medium", "Low", "Unknown"]},
-            )
-            fig5.update_layout(**_PLOTLY_DARK, showlegend=False)
-            st.plotly_chart(fig5, use_container_width=True)
+        st.divider()
 
-        # ── Recent critical events ─────────────────────────────────────────────
-        st.markdown("#### Recent High-Confidence Threats")
-        hi_conf = reports[reports["confidence_score"].fillna(0) >= 70].head(5)
+        # ── Row 3: CVE severity + Watchlist alert trend ───────────────────────
+        row3_l, row3_r = st.columns(2)
+
+        with row3_l:
+            st.markdown("#### CVE Severity Breakdown")
+            if not cves.empty and "cvss_score" in cves.columns:
+                def _sev_label(s):
+                    try:
+                        v = float(s)
+                        if v >= 9.0: return "Critical"
+                        if v >= 7.0: return "High"
+                        if v >= 4.0: return "Medium"
+                        return "Low"
+                    except Exception:
+                        return "Unknown"
+                cves_copy = cves.copy()
+                cves_copy["Severity"] = cves_copy["cvss_score"].apply(_sev_label)
+                sev_counts = cves_copy["Severity"].value_counts().reset_index()
+                sev_counts.columns = ["Severity", "Count"]
+                _sev_colors = {"Critical":"#ff4d6d","High":"#ff8c42","Medium":"#ffd166","Low":"#06d6a0","Unknown":"#5d7199"}
+                fig5 = px.bar(
+                    sev_counts, x="Severity", y="Count",
+                    color="Severity", color_discrete_map=_sev_colors,
+                    category_orders={"Severity":["Critical","High","Medium","Low","Unknown"]},
+                )
+                fig5.update_layout(**_PLOTLY_DARK, showlegend=False, height=260)
+                fig5.update_traces(hovertemplate="<b>%{x}</b>: %{y:,} CVEs<extra></extra>")
+                st.plotly_chart(fig5, use_container_width=True)
+                _kev_pct = f"{(kev_count/len(cves)*100):.1f}%" if len(cves) > 0 else "—"
+                st.caption(f"{kev_count:,} CISA KEV ({_kev_pct}) · Click ◆ CVE Tracker for filters and full list")
+            else:
+                st.info("CVE data loading…")
+
+        with row3_r:
+            st.markdown("#### Watchlist Alert Trend (14 days)")
+            if not hits_df.empty and "found_at" in hits_df.columns:
+                _hit_tl = hits_df.copy()
+                _hit_tl["date"] = pd.to_datetime(_hit_tl["found_at"], utc=True, errors="coerce").dt.floor("D")
+                _hit_14 = _hit_tl[_hit_tl["date"] >= (pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=14))]
+                _hit_grp = _hit_14.groupby(["date","severity"]).size().reset_index(name="count") if not _hit_14.empty else pd.DataFrame()
+                if not _hit_grp.empty:
+                    _hit_colors = {"critical":"#ff4d6d","high":"#ff8c42","medium":"#ffd166","low":"#06d6a0"}
+                    fig_h = px.bar(
+                        _hit_grp, x="date", y="count", color="severity",
+                        color_discrete_map=_hit_colors, barmode="stack",
+                        labels={"date":"","count":"Hits","severity":"Severity"},
+                    )
+                    fig_h.update_layout(**_PLOTLY_DARK, height=260)
+                    fig_h.update_traces(hovertemplate="%{x|%b %d}: %{y} hits<extra>%{fullData.name}</extra>")
+                    st.plotly_chart(fig_h, use_container_width=True)
+                    st.caption(f"{open_hits:,} unacknowledged · Click 🔔 Alerts tab to review")
+                else:
+                    st.info("No watchlist hits in the last 14 days.")
+            else:
+                st.info("No watchlist hits yet — add assets in ⚑ Watchlist to start monitoring.")
+
+        st.divider()
+
+        # ── Row 4: Source breakdown drilldown + confidence histogram ──────────
+        row4_l, row4_r = st.columns([2, 3])
+
+        with row4_l:
+            st.markdown("#### Reports by Source")
+            if not reports.empty:
+                by_src = reports.groupby("source_feed").size().reset_index(name="count").sort_values("count", ascending=True)
+                fig_src = px.bar(
+                    by_src, x="count", y="source_feed", orientation="h",
+                    color="count",
+                    color_continuous_scale=[[0,"#1a3a6a"],[1,"#38bdf8"]],
+                    labels={"source_feed":"","count":"Reports"},
+                )
+                fig_src.update_coloraxes(showscale=False)
+                fig_src.update_layout(**_PLOTLY_DARK, height=280)
+                fig_src.update_traces(hovertemplate="%{y}: %{x} reports<extra></extra>")
+                st.plotly_chart(fig_src, use_container_width=True)
+
+                # Drill-down: click a source to filter
+                _src_drill = st.selectbox(
+                    "Drill into source →", ["All"] + sorted(reports["source_feed"].dropna().unique().tolist()),
+                    key="dash_src_drill",
+                )
+            else:
+                _src_drill = "All"
+
+        with row4_r:
+            st.markdown("#### Confidence Distribution")
+            if not reports.empty:
+                _drill_reps = reports if _src_drill == "All" else reports[reports["source_feed"] == _src_drill]
+                scores = _drill_reps["confidence_score"].dropna()
+                fig3 = px.histogram(
+                    scores, nbins=20,
+                    color_discrete_sequence=["#38bdf8"],
+                    labels={"value":"Confidence Score","count":"Reports"},
+                )
+                fig3.update_layout(**_PLOTLY_DARK, height=280)
+                fig3.update_traces(hovertemplate="Score %{x}: %{y} reports<extra></extra>")
+                st.plotly_chart(fig3, use_container_width=True)
+                st.caption(
+                    f"Showing {len(_drill_reps):,} reports"
+                    + (f" from **{_src_drill}**" if _src_drill != "All" else " across all sources")
+                )
+            else:
+                st.info("No report data yet.")
+
+        st.divider()
+
+        # ── Row 5: Recent critical threats (drillable) ────────────────────────
+        st.markdown('<p class="section-label"><i class="bi bi-exclamation-octagon-fill bi-sm icon-error"></i>&nbsp; Recent High-Confidence Threats</p>', unsafe_allow_html=True)
+
+        _dash_conf_min = st.slider("Min confidence to display", 0, 100, 60, key="dash_conf_min")
+        hi_conf = reports[reports["confidence_score"].fillna(0) >= _dash_conf_min].head(10)
+
         if hi_conf.empty:
-            st.info("No high-confidence threats yet.")
+            st.info(f"No threats with confidence ≥ {_dash_conf_min} yet.")
         else:
             for _, row in hi_conf.iterrows():
-                ts = row["created_at"].strftime("%Y-%m-%d %H:%M") if hasattr(row["created_at"], "strftime") else "?"
+                ts    = row["created_at"].strftime("%Y-%m-%d %H:%M") if hasattr(row["created_at"], "strftime") else "?"
                 actor = row.get("threat_actor") or "Unknown"
                 conf  = int(row.get("confidence_score") or 0)
                 feed  = str(row.get("source_feed", "")).upper()
                 summary = str(row.get("summary") or "")
-                st.markdown(
-                    f'<span class="feed-tag">{feed}</span> &nbsp;'
-                    f'<b>{actor}</b> &nbsp; {_severity_badge(conf)} &nbsp;'
-                    f'<span style="color:#5d7199;font-size:0.78rem">{ts} UTC</span><br/>'
-                    f'<span style="font-size:0.85rem;color:#9aabb8">{summary[:180]}</span>',
-                    unsafe_allow_html=True,
-                )
-                st.markdown("---")
+                ttps  = row.get("ttps") or []
+                if isinstance(ttps, str):
+                    try: ttps = json.loads(ttps)
+                    except Exception: ttps = []
+                cve_list = row.get("associated_cves") or []
+                if isinstance(cve_list, str):
+                    try: cve_list = json.loads(cve_list)
+                    except Exception: cve_list = []
+                _label = f"[{ts}]  {actor}  ·  {feed}  ·  Confidence {conf}%"
+                with st.expander(_label):
+                    _dc1, _dc2 = st.columns([2, 1])
+                    with _dc1:
+                        st.markdown(
+                            _severity_badge(conf) + f' &nbsp; <span class="feed-tag">{feed}</span>',
+                            unsafe_allow_html=True,
+                        )
+                        if summary:
+                            st.markdown(f"> {summary}")
+                        if ttps:
+                            tags = " ".join(f'<span class="ttp-tag">{t}</span>' for t in ttps[:8])
+                            st.markdown(f"**TTPs:** {tags}", unsafe_allow_html=True)
+                    with _dc2:
+                        if cve_list:
+                            st.markdown("**Associated CVEs:**")
+                            for _cv in cve_list[:5]:
+                                st.markdown(f"`{_cv}`")
+                        _r_iocs = iocs[iocs["report_id"] == row["id"]] if not iocs.empty else pd.DataFrame()
+                        if not _r_iocs.empty:
+                            st.markdown(f"**{len(_r_iocs)} IOC(s):**")
+                            for _, _io in _r_iocs.head(5).iterrows():
+                                st.markdown(
+                                    f'<span class="badge-info">{_io.get("ioc_type","")}</span> '
+                                    f'<span class="ioc-val">{str(_io.get("value",""))[:60]}</span>',
+                                    unsafe_allow_html=True,
+                                )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1650,8 +1799,11 @@ with tab_analyst:
 # DARK WEB MONITOR
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_darkweb:
-    _dw_enabled = os.getenv("DARK_WEB_ENABLED", "false").lower() in ("1", "true", "yes")
-    _dw_keywords_raw = os.getenv("DARK_WEB_KEYWORDS", "")
+    # Read from DB-backed platform settings (Admin tab writes here)
+    # Fall back to env var only if DB has never been written
+    _dw_cfg = load_platform_settings()
+    _dw_enabled = _dw_cfg.get("dark_web_enabled", "false").lower() in ("1", "true", "yes")
+    _dw_keywords_raw = _dw_cfg.get("dark_web_keywords", "") or os.getenv("DARK_WEB_KEYWORDS", "")
     _dw_keywords = [k.strip() for k in _dw_keywords_raw.split(",") if k.strip()]
 
     # ── Header ────────────────────────────────────────────────────────────────
@@ -1884,12 +2036,11 @@ with tab_watchlist:
         if st.button("➕  Add to Watchlist", key="wl_add", use_container_width=True, type="primary"):
             if _new_value.strip():
                 try:
-                    import hashlib as _hl
                     from sqlalchemy import text as _text
                     _engine = get_engine()
                     with _engine.connect() as _conn:
                         _conn.execute(_text(
-                            """INSERT INTO watched_assets (asset_type, asset_value, label, active)
+                            """INSERT INTO watched_assets (asset_type, value, label, active)
                                VALUES (:t, :v, :l, true)
                                ON CONFLICT DO NOTHING"""
                         ), {"t": _new_type, "v": _new_value.strip(), "l": _new_label.strip() or None})
@@ -1921,12 +2072,12 @@ with tab_watchlist:
 
             for _, asset in _wl_show.iterrows():
                 _atype = str(asset.get("asset_type", ""))
-                _aval  = str(asset.get("asset_value", ""))
+                _aval  = str(asset.get("value", ""))        # column is "value" in watched_assets
                 _albl  = str(asset.get("label") or "")
                 _aid   = asset.get("id")
                 _active = bool(asset.get("active", True))
 
-                _hit_count = int((hits_df["asset_id"] == _aid).sum()) if not hits_df.empty and "asset_id" in hits_df.columns else 0
+                _hit_count = int((hits_df["watched_asset_id"] == _aid).sum()) if not hits_df.empty and "watched_asset_id" in hits_df.columns else 0
 
                 _btn_key = f"wl_del_{_aid}"
                 col_card, col_del = st.columns([10, 1])
@@ -1976,7 +2127,7 @@ with tab_alerts:
         _open_hits    = int((hits_df["alerted"] == False).sum()) if "alerted" in hits_df.columns else _total_hits
         _crit_hits    = int(hits_df["severity"].isin(["critical", "high"]).sum()) if "severity" in hits_df.columns else 0
         _24h_cut      = pd.Timestamp.now(tz="UTC") - _td(hours=24)
-        _hit_ts       = pd.to_datetime(hits_df.get("hit_at", pd.Series(dtype="object")), utc=True, errors="coerce")
+        _hit_ts       = pd.to_datetime(hits_df.get("found_at", pd.Series(dtype="object")), utc=True, errors="coerce")
         _new_24h_hits = int((_hit_ts >= _24h_cut).sum())
         with al1: st.metric("Total Hits",     f"{_total_hits:,}")
         with al2: st.metric("Unacknowledged", f"{_open_hits:,}")
@@ -2008,13 +2159,13 @@ with tab_alerts:
 
         for _, hit in _fhits.head(100).iterrows():
             _sev     = str(hit.get("severity", "medium"))
-            _aval    = str(hit.get("asset_value", ""))
+            _aval    = str(hit.get("asset_value", ""))   # aliased from wa.value
             _atype   = str(hit.get("asset_type", ""))
             _albl    = str(hit.get("label") or "")
-            _ioc_val = str(hit.get("ioc_value", ""))
-            _src     = str(hit.get("hit_source", ""))
-            _ctx     = str(hit.get("context_snippet") or "")[:300]
-            _ts      = hit.get("hit_at")
+            _ioc_val = str(hit.get("matched_value", "")) # model col: matched_value
+            _src     = str(hit.get("source_feed", ""))   # model col: source_feed
+            _ctx     = str(hit.get("context") or "")[:300]  # model col: context
+            _ts      = hit.get("found_at")               # model col: found_at
             _ts_str  = _ts.strftime("%Y-%m-%d %H:%M UTC") if hasattr(_ts, "strftime") else "—"
             _badge   = f'<span class="badge-{_sev}">{_sev.upper()}</span>'
             _alerted = bool(hit.get("alerted", False))
@@ -2054,13 +2205,21 @@ with tab_campaigns:
                     from sqlalchemy import text as _text
                     _engine = get_engine()
                     with _engine.connect() as _conn:
+                        # "objective" not a column — prepend to description
+                        _obj_txt = _cam_obj.strip()
+                        _desc_txt = _cam_desc.strip()
+                        if _obj_txt and _desc_txt:
+                            _full_desc = f"Objective: {_obj_txt}\n\n{_desc_txt}"
+                        elif _obj_txt:
+                            _full_desc = f"Objective: {_obj_txt}"
+                        else:
+                            _full_desc = _desc_txt or None
                         _conn.execute(_text(
-                            """INSERT INTO campaigns (name, threat_actor, objective, status, description, first_seen)
-                               VALUES (:n, :a, :o, :s, :d, NOW())
+                            """INSERT INTO campaigns (name, threat_actor, status, description, first_seen)
+                               VALUES (:n, :a, :s, :d, NOW())
                                ON CONFLICT DO NOTHING"""
                         ), {"n": _cam_name.strip(), "a": _cam_actor.strip() or None,
-                            "o": _cam_obj.strip() or None,  "s": _cam_status,
-                            "d": _cam_desc.strip() or None})
+                            "s": _cam_status, "d": _full_desc})
                         _conn.commit()
                     load_campaigns_data.clear()
                     st.success("Campaign created.")
@@ -2089,7 +2248,7 @@ with tab_campaigns:
             for _, camp in _cam_show.iterrows():
                 _cname   = str(camp.get("name", "Unnamed Campaign"))
                 _cactor  = str(camp.get("threat_actor") or "Unknown")
-                _cobj    = str(camp.get("objective") or "")
+                _cobj    = ""   # no separate objective column; merged into description
                 _cstat   = str(camp.get("status", "unknown"))
                 _cdesc   = str(camp.get("description") or "")
                 _cstart  = camp.get("first_seen")
@@ -2454,7 +2613,7 @@ with tab_admin:
             from sqlalchemy import text as _text
             _engine = get_engine()
             _api_keys_df = pd.read_sql(
-                "SELECT id, name, permissions, created_at, last_used_at, active FROM api_keys ORDER BY created_at DESC",
+                "SELECT id, label, permissions, created_at, last_used, active FROM api_keys ORDER BY created_at DESC",
                 _engine,
             )
         except Exception:
@@ -2463,7 +2622,7 @@ with tab_admin:
         if not _api_keys_df.empty:
             for _, _ak in _api_keys_df.iterrows():
                 _ak_active = bool(_ak.get("active", True))
-                _lu = _ak.get("last_used_at")
+                _lu = _ak.get("last_used")
                 _lu_str = _lu.strftime("%Y-%m-%d %H:%M") if hasattr(_lu, "strftime") else "Never"
                 _ca = _ak.get("created_at")
                 _ca_str = _ca.strftime("%Y-%m-%d") if hasattr(_ca, "strftime") else "?"
@@ -2471,7 +2630,7 @@ with tab_admin:
                 _ak_id = _ak.get("id")
                 _ak_col, _ak_del_col = st.columns([10, 1])
                 with _ak_col:
-                    _ak_name = _ak["name"]
+                    _ak_name = _ak["label"]
                     _ak_status_badge = (
                         "&nbsp;<span class='badge-low'>ACTIVE</span>"
                         if _ak_active else
@@ -2518,9 +2677,10 @@ with tab_admin:
                 _engine = get_engine()
                 with _engine.connect() as _conn:
                     _conn.execute(_text(
-                        """INSERT INTO api_keys (name, key_hash, permissions, active)
-                           VALUES (:n, :h, :p, true)"""
-                    ), {"n": _new_key_name.strip(), "h": _key_hash, "p": _new_key_perms})
+                        """INSERT INTO api_keys (label, key_hash, key_prefix, permissions, active)
+                           VALUES (:n, :h, :kp, :p, true)"""
+                    ), {"n": _new_key_name.strip(), "h": _key_hash,
+                        "kp": _raw_key[:8], "p": [_new_key_perms]})
                     _conn.commit()
                 st.success("Key generated! Copy it now — it will not be shown again:")
                 st.code(_raw_key, language="text")
