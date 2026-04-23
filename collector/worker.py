@@ -412,6 +412,12 @@ def _run_feed(feed, db: Session):
     log.info(f"[{feed.name}] Collecting...")
     _upsert_status(db, feed.name, last_run=datetime.now(timezone.utc), status="running")
     try:
+        # Inject live DB settings into the dark web feed before every run so
+        # changes made in the WebUI admin panel take effect without a restart.
+        if feed.name == "darkweb" and hasattr(feed, "configure"):
+            from settings import get_all_settings
+            feed.configure(get_all_settings(db))
+
         items = feed.fetch()
         processor = _PROCESSORS.get(feed.name)
         count = processor(db, items) if processor else 0

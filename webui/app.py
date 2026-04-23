@@ -350,6 +350,30 @@ hr { border: none !important; border-top: 1px solid #0f2040 !important; margin: 
     padding:3px 10px; border-radius:20px; font-size:0.72rem;
     font-family:'JetBrains Mono',monospace; margin:2px;
 }
+
+/* ── Admin settings panel ───────────────────────────────────────────────── */
+.admin-section {
+    background: linear-gradient(145deg, #0c1628, #080e1c);
+    border: 1px solid #142038; border-radius: 10px;
+    padding: 20px 24px; margin-bottom: 18px;
+}
+.admin-section-title {
+    font-size: 0.8rem; font-weight: 800; text-transform: uppercase;
+    letter-spacing: 0.12em; color: #38bdf8;
+    display: flex; align-items: center; gap: 8px;
+    padding-bottom: 12px; margin-bottom: 16px;
+    border-bottom: 1px solid #0f2040;
+}
+.admin-save-success {
+    background: rgba(6,214,160,0.08); border: 1px solid rgba(6,214,160,0.3);
+    border-radius: 8px; padding: 10px 16px;
+    color: #06d6a0; font-size: 0.82rem; font-weight: 600;
+    display: flex; align-items: center; gap: 8px;
+}
+.admin-hint {
+    font-size: 0.72rem; color: #3d5a80; margin-top: 4px;
+    font-family: 'JetBrains Mono', monospace;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -424,6 +448,59 @@ def load_darkweb_data():
     except Exception:
         # Table may not exist yet if collector hasn't run
         return pd.DataFrame()
+
+
+# ─── Admin: platform settings (read/write) ────────────────────────────────────
+
+# Default values shown in the UI when the table has no row yet
+_SETTINGS_DEFAULTS: dict[str, str] = {
+    "dark_web_enabled":       "false",
+    "dark_web_keywords":      "",
+    "dark_web_onion_sources": "",
+    "dark_web_interval":      "21600",
+}
+
+
+@st.cache_data(ttl=5)
+def load_platform_settings() -> dict[str, str]:
+    """Read all platform settings from the DB (short TTL so changes propagate quickly)."""
+    engine = get_engine()
+    settings = dict(_SETTINGS_DEFAULTS)
+    try:
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            rows = conn.execute(text("SELECT key, value FROM platform_settings")).fetchall()
+        for key, value in rows:
+            settings[key] = value or ""
+    except Exception:
+        pass   # table may not exist on first boot; defaults are fine
+    return settings
+
+
+def save_platform_settings(updates: dict[str, str]) -> bool:
+    """Upsert settings into the DB and bust the cache so the next read is fresh."""
+    engine = get_engine()
+    try:
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            for key, value in updates.items():
+                conn.execute(
+                    text("""
+                        INSERT INTO platform_settings (key, value, updated_at, updated_by)
+                        VALUES (:k, :v, NOW(), 'webui')
+                        ON CONFLICT (key) DO UPDATE
+                        SET value = EXCLUDED.value,
+                            updated_at = NOW(),
+                            updated_by = 'webui'
+                    """),
+                    {"k": key, "v": value},
+                )
+            conn.commit()
+        load_platform_settings.clear()   # invalidate Streamlit cache
+        return True
+    except Exception as exc:
+        st.error(f"Failed to save settings: {exc}")
+        return False
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -754,10 +831,11 @@ st.divider()
 
 # ─── Tabs ─────────────────────────────────────────────────────────────────────
 (tab_dash, tab_feed, tab_actors, tab_iocs,
- tab_cves, tab_attack, tab_analyst, tab_darkweb, tab_health) = st.tabs([
-    "◈  Dashboard", "◉  Threat Feed", "⬡  Actors",
-    "⊙  IOC Hunt",  "◆  CVE Tracker",
-    "⬢  ATT&CK",    "⊕  AI Analyst",  "◉  Dark Web",  "◎  Feed Health",
+ tab_cves, tab_attack, tab_analyst, tab_darkweb, tab_health, tab_admin) = st.tabs([
+    "◈  Dashboard",  "◉  Threat Feed", "⬡  Actors",
+    "⊙  IOC Hunt",   "◆  CVE Tracker",
+    "⬢  ATT&CK",     "⊕  AI Analyst",  "◉  Dark Web",
+    "◎  Feed Health", "⚙  Admin",
 ])
 
 
@@ -1664,3 +1742,135 @@ with tab_health:
   </div>
   <div class="feed-count">+{recent:,} / {total:,}</div>
 </div>""", unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ADMIN SETTINGS
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_admin:
+    st.markdown('<p class="section-label"><i class="bi bi-gear-fill bi-sm icon-accent"></i>&nbsp; Platform Administration</p>', unsafe_allow_html=True)
+
+    _cfg = load_platform_settings()
+
+    # ── Dark Web Monitor ──────────────────────────────────────────────────────
+    st.markdown("""
+<div class="admin-section">
+  <div class="admin-section-title">
+    <i class="bi bi-incognito bi-md"></i> Dark Web Monitor
+  </div>
+</div>""", unsafe_allow_html=True)
+
+    # We render the actual controls outside the HTML block so Streamlit widgets work
+    with st.container():
+        adm_c1, adm_c2 = st.columns([1, 3])
+
+        with adm_c1:
+            dw_enabled_val = _cfg.get("dark_web_enabled", "false").lower() == "true"
+            dw_toggle = st.toggle(
+                "Enable Dark Web Monitoring",
+                value=dw_enabled_val,
+                key="adm_dw_toggle",
+                help="When enabled, the collector scans Ahmia.fi and configured .onion sources at the set interval.",
+            )
+
+        with adm_c2:
+            _interval_hours = int(_cfg.get("dark_web_interval", "21600")) // 3600
+            dw_interval = st.slider(
+                "Scan interval (hours)",
+                min_value=1, max_value=72,
+                value=_interval_hours,
+                key="adm_dw_interval",
+                help="How often the collector scans. 6 hours is recommended.",
+            )
+
+        st.markdown("**Keywords to Monitor** — one per line (your domain, brand name, IP ranges, etc.)")
+        _kw_current = "\n".join(k for k in _cfg.get("dark_web_keywords", "").split(",") if k.strip())
+        dw_keywords_input = st.text_area(
+            "Keywords",
+            value=_kw_current,
+            height=120,
+            placeholder="acmecorp.com\nacme corporation\n192.168.1.0/24",
+            key="adm_dw_keywords",
+            label_visibility="collapsed",
+        )
+        st.markdown('<div class="admin-hint">Each line is treated as one search term. Match your domain, brand names, key IP ranges, or known credential patterns (e.g. @yourdomain.com).</div>', unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("**.onion Sources** — one URL per line *(optional)*")
+        _onion_current = "\n".join(u for u in _cfg.get("dark_web_onion_sources", "").split(",") if u.strip())
+        dw_onion_input = st.text_area(
+            "Onion sources",
+            value=_onion_current,
+            height=90,
+            placeholder="http://example.onion/search\nhttp://anotherindex.onion",
+            key="adm_dw_onion",
+            label_visibility="collapsed",
+        )
+        st.markdown('<div class="admin-hint">Publicly accessible .onion index/search pages (no login required). Leave blank to use Ahmia.fi only.</div>', unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        save_col, status_col = st.columns([1, 3])
+        with save_col:
+            if st.button("💾  Save Dark Web Settings", key="adm_dw_save", type="primary"):
+                new_keywords = ",".join(
+                    k.strip() for k in dw_keywords_input.splitlines() if k.strip()
+                )
+                new_onions = ",".join(
+                    u.strip() for u in dw_onion_input.splitlines() if u.strip()
+                )
+                ok = save_platform_settings({
+                    "dark_web_enabled":       "true" if dw_toggle else "false",
+                    "dark_web_keywords":      new_keywords,
+                    "dark_web_onion_sources": new_onions,
+                    "dark_web_interval":      str(dw_interval * 3600),
+                })
+                if ok:
+                    st.session_state["adm_save_ok"] = True
+                    st.rerun()
+
+        with status_col:
+            if st.session_state.get("adm_save_ok"):
+                st.markdown("""
+<div class="admin-save-success">
+  <i class="bi bi-check-circle-fill"></i>
+  Settings saved — collector will apply changes on its next run cycle.
+</div>""", unsafe_allow_html=True)
+                st.session_state["adm_save_ok"] = False
+
+    st.divider()
+
+    # ── Current settings summary ──────────────────────────────────────────────
+    st.markdown('<p class="section-label"><i class="bi bi-sliders bi-sm icon-muted"></i>&nbsp; Current Configuration</p>', unsafe_allow_html=True)
+
+    _fresh = load_platform_settings()
+    _kw_display = [k for k in _fresh.get("dark_web_keywords", "").split(",") if k.strip()]
+    _onion_display = [u for u in _fresh.get("dark_web_onion_sources", "").split(",") if u.strip()]
+    _status_color = "#06d6a0" if _fresh.get("dark_web_enabled") == "true" else "#ff4d6d"
+    _status_label = "ENABLED" if _fresh.get("dark_web_enabled") == "true" else "DISABLED"
+    _interval_disp = int(_fresh.get("dark_web_interval", "21600")) // 3600
+
+    cfg_a, cfg_b, cfg_c = st.columns(3)
+    with cfg_a:
+        st.markdown(f"""
+<div style="background:#0c1628;border:1px solid #142038;border-radius:8px;padding:14px 18px;">
+  <div style="font-size:0.68rem;color:#3d5a80;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:6px;">Status</div>
+  <div style="font-size:1.1rem;font-weight:800;color:{_status_color};letter-spacing:0.08em;">{_status_label}</div>
+</div>""", unsafe_allow_html=True)
+    with cfg_b:
+        st.markdown(f"""
+<div style="background:#0c1628;border:1px solid #142038;border-radius:8px;padding:14px 18px;">
+  <div style="font-size:0.68rem;color:#3d5a80;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:6px;">Scan Interval</div>
+  <div style="font-size:1.1rem;font-weight:800;color:#38bdf8;">Every {_interval_disp}h</div>
+</div>""", unsafe_allow_html=True)
+    with cfg_c:
+        st.markdown(f"""
+<div style="background:#0c1628;border:1px solid #142038;border-radius:8px;padding:14px 18px;">
+  <div style="font-size:0.68rem;color:#3d5a80;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:6px;">Keywords / Sources</div>
+  <div style="font-size:1.1rem;font-weight:800;color:#38bdf8;">{len(_kw_display)} keywords &nbsp;·&nbsp; {len(_onion_display)} .onion</div>
+</div>""", unsafe_allow_html=True)
+
+    if _kw_display:
+        st.markdown("<br>", unsafe_allow_html=True)
+        kw_pill_html = "".join(f'<span class="kw-pill">{k}</span>' for k in _kw_display)
+        st.markdown(f'<div><span style="font-size:0.72rem;color:#3d5a80;text-transform:uppercase;letter-spacing:0.1em;font-weight:700;">Active Keywords:</span><br>{kw_pill_html}</div>', unsafe_allow_html=True)

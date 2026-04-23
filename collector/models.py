@@ -122,4 +122,18 @@ class DarkWebMention(Base):
     fingerprint     = Column(String(64), unique=True, index=True)
 
 
+class PlatformSettings(Base):
+    """Key/value store for runtime-configurable platform settings.
+    Written by the WebUI admin panel; read by the collector at fetch time.
+    Env vars act as fallback when a key is not yet in this table.
+    """
+    __tablename__ = "platform_settings"
+    key        = Column(String(100), primary_key=True)
+    value      = Column(Text)
+    updated_at = Column(DateTime(timezone=True),
+                        default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))
+    updated_by = Column(String(100), default="admin")
+
+
 Base.metadata.create_all(bind=engine)

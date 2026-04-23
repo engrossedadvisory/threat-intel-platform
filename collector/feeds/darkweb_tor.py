@@ -30,16 +30,10 @@ from .base import BaseFeed
 
 log = logging.getLogger(__name__)
 
-# ─── Configuration ────────────────────────────────────────────────────────────
+# ─── Module-level defaults (env vars used as initial fallback only) ───────────
+# The DarkWebFeed.configure() method overrides these at runtime from the DB.
 
-DARK_WEB_ENABLED  = os.getenv("DARK_WEB_ENABLED", "false").lower() in ("1", "true", "yes")
-TOR_PROXY_URL     = os.getenv("TOR_PROXY_URL", "socks5h://tor-proxy:9050")
-# Comma-separated list of keywords to monitor (your domains, brand names, etc.)
-_raw_keywords     = os.getenv("DARK_WEB_KEYWORDS", "")
-WATCH_KEYWORDS: list[str] = [k.strip() for k in _raw_keywords.split(",") if k.strip()]
-
-# Interval: every 6 hours is plenty — dark web indexers don't update faster
-INTERVAL_SECONDS = int(os.getenv("DARK_WEB_INTERVAL", str(6 * 3600)))
+TOR_PROXY_URL = os.getenv("TOR_PROXY_URL", "socks5h://tor-proxy:9050")
 
 # ─── PII sanitiser ────────────────────────────────────────────────────────────
 
@@ -276,11 +270,6 @@ def _search_via_tor2web(keyword: str, onion_url: str, session: requests.Session)
 
 # ─── Source 3: Direct .onion via Tor proxy ────────────────────────────────────
 
-# Env var: comma-separated list of public .onion index/search URLs to monitor.
-# These should be publicly accessible (no login) index/search pages only.
-_raw_onion = os.getenv("DARK_WEB_ONION_SOURCES", "")
-ONION_SOURCES: list[str] = [u.strip() for u in _raw_onion.split(",") if u.strip()]
-
 
 def _fetch_onion(url: str, keyword: str, tor: requests.Session) -> list[dict]:
     """Fetch a single .onion search/index page via Tor SOCKS5. Metadata only."""
@@ -334,40 +323,71 @@ def _fetch_onion(url: str, keyword: str, tor: requests.Session) -> list[dict]:
 # ─── Feed class ───────────────────────────────────────────────────────────────
 
 class DarkWebFeed(BaseFeed):
-    name             = "darkweb"
-    interval_seconds = INTERVAL_SECONDS
+    """Dark web monitoring feed.
+
+    Runtime config is injected by the worker via configure() before every run,
+    pulling values from the platform_settings DB table (set in the WebUI admin
+    panel).  Env vars are used as fallback when no DB row exists.
+    """
+    name = "darkweb"
+
+    def __init__(self):
+        # Load initial config from env vars; worker will call configure() to
+        # override from DB before each fetch.
+        self._enabled       = False
+        self._keywords:     list[str] = []
+        self._onion_sources: list[str] = []
+        self.interval_seconds = int(os.getenv("DARK_WEB_INTERVAL", str(6 * 3600)))
+
+    def configure(self, settings: dict) -> None:
+        """Apply runtime settings from the DB (called by worker before fetch)."""
+        self._enabled = settings.get("dark_web_enabled", "false").lower() in ("1", "true", "yes")
+        kw_raw        = settings.get("dark_web_keywords", "")
+        self._keywords = [k.strip() for k in kw_raw.split(",") if k.strip()]
+        onion_raw      = settings.get("dark_web_onion_sources", "")
+        self._onion_sources = [u.strip() for u in onion_raw.split(",") if u.strip()]
+        interval_raw   = settings.get("dark_web_interval", str(6 * 3600))
+        try:
+            self.interval_seconds = int(interval_raw)
+        except (ValueError, TypeError):
+            self.interval_seconds = 6 * 3600
+        log.debug(
+            f"[darkweb] Configured — enabled={self._enabled}, "
+            f"keywords={self._keywords}, interval={self.interval_seconds}s"
+        )
 
     def fetch(self) -> list[dict]:
-        if not DARK_WEB_ENABLED:
-            log.debug("[darkweb] Feed disabled (DARK_WEB_ENABLED != true). Skipping.")
+        if not self._enabled:
+            log.debug("[darkweb] Feed disabled via admin settings. Skipping.")
             return []
 
-        if not WATCH_KEYWORDS:
-            log.warning("[darkweb] DARK_WEB_KEYWORDS is empty — nothing to monitor.")
+        if not self._keywords:
+            log.warning("[darkweb] No keywords configured — nothing to monitor. "
+                        "Add keywords in the WebUI Admin tab.")
             return []
 
-        log.info(f"[darkweb] Scanning for {len(WATCH_KEYWORDS)} keyword(s): {WATCH_KEYWORDS}")
+        log.info(f"[darkweb] Scanning for {len(self._keywords)} keyword(s): {self._keywords}")
 
         clearnet = _clearnet_session()
         tor      = _tor_session()   # None if Tor proxy is not reachable
 
         all_results: list[dict] = []
 
-        for keyword in WATCH_KEYWORDS:
+        for keyword in self._keywords:
             # Source 1: Ahmia.fi (always)
             hits = _search_ahmia(keyword, clearnet)
             all_results.extend(hits)
             time.sleep(1.5)   # polite crawl delay
 
             # Source 2: Direct .onion sources (if Tor available)
-            if tor and ONION_SOURCES:
-                for onion_url in ONION_SOURCES:
+            if tor and self._onion_sources:
+                for onion_url in self._onion_sources:
                     hits = _fetch_onion(onion_url, keyword, tor)
                     all_results.extend(hits)
                     time.sleep(2)
-            elif ONION_SOURCES and not tor:
+            elif self._onion_sources and not tor:
                 # Tor unavailable — try tor2web clearnet gateways as fallback
-                for onion_url in ONION_SOURCES:
+                for onion_url in self._onion_sources:
                     hits = _search_via_tor2web(keyword, onion_url, clearnet)
                     all_results.extend(hits)
                     time.sleep(1.5)
