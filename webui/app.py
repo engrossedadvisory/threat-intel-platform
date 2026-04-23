@@ -358,6 +358,56 @@ hr { border: none !important; border-top: 1px solid #0f2040 !important; margin: 
     font-family:'JetBrains Mono',monospace; margin:2px;
 }
 
+/* ── Watchlist & Alerts ─────────────────────────────────────────────────── */
+.watchlist-card {
+    background: linear-gradient(145deg, #0c1628, #080e1c);
+    border: 1px solid #142038; border-left: 3px solid #1e4080;
+    border-radius: 8px; padding: 12px 16px; margin-bottom: 5px;
+    display: flex; align-items: center; gap: 14px;
+    transition: border-color .15s, box-shadow .15s;
+}
+.watchlist-card:hover { border-left-color: #38bdf8; box-shadow: 0 4px 16px rgba(56,189,248,0.07); }
+.watchlist-card.domain { border-left-color: #38bdf8; }
+.watchlist-card.ip     { border-left-color: #06d6a0; }
+.watchlist-card.cidr   { border-left-color: #ffd166; }
+.watchlist-card.email_domain { border-left-color: #b48ef5; }
+.watchlist-card.keyword      { border-left-color: #ff8c42; }
+.wl-type  { font-family:'JetBrains Mono',monospace; font-size:0.68rem; font-weight:700;
+            text-transform:uppercase; color:#3d5a80; min-width:90px; }
+.wl-value { font-family:'JetBrains Mono',monospace; font-size:0.83rem; color:#7dd3fc; flex:1; }
+.wl-label { font-size:0.72rem; color:#5a7fa8; }
+.alert-card {
+    background: linear-gradient(145deg, #0e1a0c, #080e0c);
+    border: 1px solid #1a3020; border-left: 3px solid #06d6a0;
+    border-radius: 8px; padding: 13px 17px; margin-bottom: 6px;
+}
+.alert-card.critical { border-left-color: #ff4d6d !important; background: linear-gradient(145deg,#1a0a10,#0e0608) !important; }
+.alert-card.high     { border-left-color: #ff8c42 !important; }
+.alert-card.medium   { border-left-color: #ffd166 !important; }
+.alert-title { font-size:0.85rem; font-weight:600; color:#c8e8c0; margin-bottom:4px; }
+.alert-meta  { font-size:0.72rem; color:#3d5a4a; font-family:'JetBrains Mono',monospace; }
+.alert-ctx   { font-size:0.78rem; color:#5a7a5a; margin-top:5px; font-style:italic; }
+/* ── Campaign cards ─────────────────────────────────────────────────────── */
+.campaign-card {
+    background: linear-gradient(145deg, #0d1220, #080e1c);
+    border: 1px solid #1a2840; border-left: 4px solid #60a5fa;
+    border-radius: 10px; padding: 16px 20px; margin-bottom: 8px;
+    transition: border-color .15s, box-shadow .15s;
+}
+.campaign-card:hover { border-left-color: #93c5fd; box-shadow: 0 4px 20px rgba(96,165,250,0.08); }
+.campaign-name { font-size:1rem; font-weight:700; color:#bfdbfe; margin-bottom:4px; }
+.campaign-meta { font-size:0.72rem; color:#3d5a80; font-family:'JetBrains Mono',monospace; }
+.campaign-desc { font-size:0.82rem; color:#7a9cc0; margin-top:7px; }
+/* ── Enrichment inline badges ───────────────────────────────────────────── */
+.enrich-vt   { background:rgba(255,77,109,0.1); color:#ff8080; border:1px solid rgba(255,77,109,0.3);
+    padding:2px 8px; border-radius:20px; font-size:0.66rem; font-weight:700;
+    font-family:'JetBrains Mono',monospace; margin-right:4px; }
+.enrich-gn   { background:rgba(6,214,160,0.1); color:#06d6a0; border:1px solid rgba(6,214,160,0.3);
+    padding:2px 8px; border-radius:20px; font-size:0.66rem; font-weight:700;
+    font-family:'JetBrains Mono',monospace; margin-right:4px; }
+.enrich-sh   { background:rgba(180,142,245,0.1); color:#b48ef5; border:1px solid rgba(180,142,245,0.3);
+    padding:2px 8px; border-radius:20px; font-size:0.66rem; font-weight:700;
+    font-family:'JetBrains Mono',monospace; margin-right:4px; }
 /* ── Admin settings panel ───────────────────────────────────────────────── */
 .admin-section {
     background: linear-gradient(145deg, #0c1628, #080e1c);
@@ -457,6 +507,59 @@ def load_darkweb_data():
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=20)
+def load_watchlist_data():
+    """Load watched assets and recent hits."""
+    engine = get_engine()
+    try:
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            assets = pd.read_sql(
+                "SELECT * FROM watched_assets ORDER BY created_at DESC", engine
+            )
+            hits = pd.read_sql(
+                """SELECT wh.*, wa.asset_value, wa.asset_type, wa.label
+                   FROM watchlist_hits wh
+                   JOIN watched_assets wa ON wh.asset_id = wa.id
+                   ORDER BY wh.hit_at DESC LIMIT 500""", engine
+            )
+        return assets, hits
+    except Exception:
+        return pd.DataFrame(), pd.DataFrame()
+
+
+@st.cache_data(ttl=20)
+def load_campaigns_data():
+    """Load campaigns."""
+    engine = get_engine()
+    try:
+        return pd.read_sql(
+            "SELECT * FROM campaigns ORDER BY first_seen DESC LIMIT 200", engine
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=30)
+def load_enrichment_map(ioc_values: tuple) -> dict:
+    """Return a dict of ioc_value → enrichment row for the given values."""
+    if not ioc_values:
+        return {}
+    engine = get_engine()
+    try:
+        from sqlalchemy import text
+        placeholders = ", ".join(f":v{i}" for i in range(len(ioc_values)))
+        params = {f"v{i}": v for i, v in enumerate(ioc_values)}
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(f"SELECT * FROM ioc_enrichment WHERE ioc_value IN ({placeholders})"),
+                params,
+            ).fetchall()
+        return {r[1]: dict(r._mapping) for r in rows}   # ioc_value → row
+    except Exception:
+        return {}
+
+
 # ─── Admin: platform settings (read/write) ────────────────────────────────────
 
 # Default values shown in the UI when the table has no row yet
@@ -465,6 +568,22 @@ _SETTINGS_DEFAULTS: dict[str, str] = {
     "dark_web_keywords":      "",
     "dark_web_onion_sources": "",
     "dark_web_interval":      "21600",
+    # Enrichment API keys
+    "enrichment_vt_key":      "",
+    "enrichment_gn_key":      "",
+    "enrichment_shodan_key":  "",
+    # GitHub monitoring
+    "github_token":           "",
+    # Alert channels
+    "alert_email_enabled":    "false",
+    "smtp_host":              "",
+    "smtp_port":              "587",
+    "smtp_user":              "",
+    "smtp_pass":              "",
+    "alert_from_email":       "",
+    "alert_to_email":         "",
+    "alert_slack_webhook":    "",
+    "alert_teams_webhook":    "",
 }
 
 
@@ -759,6 +878,8 @@ def analyst_reply(messages: list) -> str:
 reports, iocs, cves, feed_status = load_data()
 techniques_df, mitigations_df = load_attack_data()
 darkweb_df = load_darkweb_data()
+watchlist_df, hits_df = load_watchlist_data()
+campaigns_df = load_campaigns_data()
 
 # ─── Platform header ──────────────────────────────────────────────────────────
 _now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -815,12 +936,13 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ─── Top KPI strip ────────────────────────────────────────────────────────────
-k1, k2, k3, k4, k5, k6 = st.columns(6)
+k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
 kev_count  = int((cves["is_kev"] == 1).sum()) if not cves.empty and "is_kev" in cves else 0
 crit_cves  = int((cves["cvss_score"].fillna(0) >= 9.0).sum()) if not cves.empty and "cvss_score" in cves else 0
 active_f   = int((feed_status["status"] == "ok").sum()) if not feed_status.empty else 0
 total_f    = len(feed_status)
 ttp_usage  = _ttp_map(reports)
+open_hits  = int((hits_df["alerted"] == False).sum()) if not hits_df.empty and "alerted" in hits_df.columns else 0
 
 with k1: st.metric("Threat Reports",  f"{len(reports):,}")
 with k2: st.metric("IOCs Tracked",    f"{len(iocs):,}")
@@ -828,16 +950,20 @@ with k3: st.metric("CVEs Monitored",  f"{len(cves):,}")
 with k4: st.metric("CISA KEV",        f"{kev_count:,}")
 with k5: st.metric("CVSS ≥ 9.0",      f"{crit_cves:,}")
 with k6: st.metric("Active Feeds",    f"{active_f} / {total_f}")
+with k7: st.metric("⚑ Open Alerts",   f"{open_hits:,}")
 
 st.divider()
 
 # ─── Tabs ─────────────────────────────────────────────────────────────────────
 (tab_dash, tab_feed, tab_actors, tab_iocs,
- tab_cves, tab_attack, tab_analyst, tab_darkweb, tab_health, tab_admin) = st.tabs([
-    "◈  Dashboard",  "◉  Threat Feed", "⬡  Actors",
-    "⊙  IOC Hunt",   "◆  CVE Tracker",
-    "⬢  ATT&CK",     "⊕  AI Analyst",  "◉  Dark Web",
-    "◎  Feed Health", "⚙  Admin",
+ tab_cves, tab_attack, tab_analyst, tab_darkweb,
+ tab_watchlist, tab_alerts, tab_campaigns,
+ tab_health, tab_admin) = st.tabs([
+    "◈  Dashboard",    "◉  Threat Feed",  "⬡  Actors",
+    "⊙  IOC Hunt",     "◆  CVE Tracker",  "⬢  ATT&CK",
+    "⊕  AI Analyst",   "◉  Dark Web",
+    "⚑  Watchlist",   "🔔  Alerts",       "🎯  Campaigns",
+    "◎  Feed Health",  "⚙  Admin",
 ])
 
 
@@ -1160,17 +1286,40 @@ with tab_iocs:
 
         st.caption(f"{len(fi):,} IOCs match · showing first 200")
 
-        # Enrichment table with external links
+        # Load enrichment scores for displayed IOCs
+        _ioc_vals = tuple(fi["value"].head(200).tolist()) if not fi.empty else ()
+        _enrich_map = load_enrichment_map(_ioc_vals) if _ioc_vals else {}
+
+        # Enrichment table with external links and enrichment badges
         if not fi.empty:
             for _, row in fi.head(200).iterrows():
                 itype = str(row.get("ioc_type", ""))
                 val   = str(row.get("value", ""))
                 fam   = str(row.get("malware_family") or "")
                 links = _enrichment_links(itype, val)
+                # Build enrichment badge HTML
+                _enr = _enrich_map.get(val, {})
+                _enr_html = ""
+                if _enr:
+                    _vt = _enr.get("vt_malicious_count")
+                    _gn = _enr.get("greynoise_classification")
+                    _sh_ports = _enr.get("shodan_ports")
+                    if _vt is not None:
+                        _vt_color = "critical" if int(_vt) >= 5 else ("medium" if int(_vt) > 0 else "low")
+                        _enr_html += f'<span class="badge-{_vt_color}" title="VirusTotal detections">VT {_vt}</span> '
+                    if _gn:
+                        _gn_cls = str(_gn).lower()
+                        _gn_cls_map = {"malicious": "critical", "benign": "low", "unknown": "info"}
+                        _gn_badge = _gn_cls_map.get(_gn_cls, "info")
+                        _enr_html += f'<span class="badge-{_gn_badge}" title="GreyNoise">GN {_gn}</span> '
+                    if _sh_ports:
+                        _ports = str(_sh_ports)[:30]
+                        _enr_html += f'<span class="badge-medium" title="Shodan open ports">⊞ {_ports}</span> '
                 st.markdown(
                     f'<span class="badge-info">{itype}</span> &nbsp;'
                     f'<span class="ioc-val">{val}</span>'
                     + (f' &nbsp; <span style="color:#6e7fa3;font-size:0.78rem">({fam})</span>' if fam else "")
+                    + (f' &nbsp; {_enr_html}' if _enr_html else "")
                     + f'<br/><span style="font-size:0.75rem;color:#3d5a80"><i class="bi bi-box-arrow-up-right"></i> {links}</span>',
                     unsafe_allow_html=True,
                 )
@@ -1424,6 +1573,7 @@ with tab_analyst:
             "Which industries are being targeted the most?",
             "What TTPs should I prioritise for detection rules?",
             "Give me an executive summary of current threats.",
+            "Generate a Sigma detection rule for the most common TTP observed.",
         ]
         cols = st.columns(2)
         for i, q in enumerate(starters):
@@ -1431,6 +1581,33 @@ with tab_analyst:
                 # Store the question; the response logic below will pick it up
                 st.session_state.analyst_messages.append({"role": "user", "content": q})
                 st.rerun()
+
+    # ── Sigma rule quick-generate ─────────────────────────────────────────────
+    with st.expander("⚡  Quick-generate Sigma detection rules", expanded=False):
+        st.markdown(
+            '<span style="font-size:0.78rem;color:#5a7fa8;">Generate YAML Sigma rules from your top observed TTPs — '
+            'ready to import into Splunk, Elastic, or any Sigma-compatible SIEM.</span>',
+            unsafe_allow_html=True,
+        )
+        _sigma_c1, _sigma_c2 = st.columns([3, 1])
+        with _sigma_c1:
+            _top_ttps = sorted(ttp_usage.items(), key=lambda x: -(x[1].get("count", 0) if isinstance(x[1], dict) else int(x[1])))[:10]
+            _ttp_opts = [f"{t} ({v.get('count',0) if isinstance(v, dict) else v}×)" for t, v in _top_ttps]
+            _sel_ttp  = st.selectbox("Select TTP to generate rule for", ["— choose —"] + _ttp_opts, key="sigma_sel")
+        with _sigma_c2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            _sigma_btn = st.button("Generate Sigma Rule", key="sigma_btn", use_container_width=True)
+        if _sigma_btn and _sel_ttp and _sel_ttp != "— choose —":
+            _ttp_id = _sel_ttp.split(" ")[0]
+            _sigma_prompt = (
+                f"Generate a complete, production-ready Sigma YAML detection rule for MITRE ATT&CK technique {_ttp_id}. "
+                "Include: title, id (random UUID), status: experimental, description, references (MITRE URL), "
+                "logsource (product: windows or linux as appropriate), detection with condition, "
+                "falsepositives list, level (critical/high/medium/low), and tags (attack.technique). "
+                "Output ONLY valid YAML, no explanations."
+            )
+            st.session_state.analyst_messages.append({"role": "user", "content": _sigma_prompt})
+            st.rerun()
 
     # ── Render conversation history ────────────────────────────────────────────
     for msg in st.session_state.analyst_messages:
@@ -1693,6 +1870,252 @@ with tab_darkweb:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# WATCHLIST
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_watchlist:
+    st.markdown('<p class="section-label"><i class="bi bi-crosshair bi-sm icon-accent"></i>&nbsp; Asset Watchlist</p>', unsafe_allow_html=True)
+
+    wl_c1, wl_c2 = st.columns([3, 1])
+    with wl_c2:
+        st.markdown("#### Add Asset")
+        _new_type  = st.selectbox("Type", ["domain", "ip", "cidr", "email_domain", "keyword"], key="wl_new_type")
+        _new_value = st.text_input("Value", placeholder="acmecorp.com / 1.2.3.4 / 10.0.0.0/8", key="wl_new_val")
+        _new_label = st.text_input("Label (optional)", placeholder="Primary domain", key="wl_new_label")
+        if st.button("➕  Add to Watchlist", key="wl_add", use_container_width=True, type="primary"):
+            if _new_value.strip():
+                try:
+                    import hashlib as _hl
+                    from sqlalchemy import text as _text
+                    _engine = get_engine()
+                    with _engine.connect() as _conn:
+                        _conn.execute(_text(
+                            """INSERT INTO watched_assets (asset_type, asset_value, label, active)
+                               VALUES (:t, :v, :l, true)
+                               ON CONFLICT DO NOTHING"""
+                        ), {"t": _new_type, "v": _new_value.strip(), "l": _new_label.strip() or None})
+                        _conn.commit()
+                    load_watchlist_data.clear()
+                    st.success(f"Added {_new_type}: {_new_value.strip()}")
+                    st.rerun()
+                except Exception as _e:
+                    st.error(f"Failed: {_e}")
+            else:
+                st.warning("Value cannot be empty.")
+
+    with wl_c1:
+        if watchlist_df.empty:
+            st.info("No assets being watched yet. Add your first asset using the form →")
+        else:
+            # Type filter
+            _wl_types = ["All"] + sorted(watchlist_df["asset_type"].dropna().unique().tolist())
+            _wl_type_filter = st.selectbox("Filter by type", _wl_types, key="wl_type_filter")
+            _wl_show = watchlist_df if _wl_type_filter == "All" else watchlist_df[watchlist_df["asset_type"] == _wl_type_filter]
+
+            # Summary pills
+            _type_counts = watchlist_df["asset_type"].value_counts()
+            _pill_html = "".join(
+                f'<span class="kw-pill">{t} ({c})</span>'
+                for t, c in _type_counts.items()
+            )
+            st.markdown(f'<div style="margin-bottom:12px;">{_pill_html}</div>', unsafe_allow_html=True)
+
+            for _, asset in _wl_show.iterrows():
+                _atype = str(asset.get("asset_type", ""))
+                _aval  = str(asset.get("asset_value", ""))
+                _albl  = str(asset.get("label") or "")
+                _aid   = asset.get("id")
+                _active = bool(asset.get("active", True))
+
+                _hit_count = int((hits_df["asset_id"] == _aid).sum()) if not hits_df.empty and "asset_id" in hits_df.columns else 0
+
+                _btn_key = f"wl_del_{_aid}"
+                col_card, col_del = st.columns([10, 1])
+                with col_card:
+                    st.markdown(f"""
+<div class="watchlist-card {_atype}">
+  <div class="wl-type">{_atype}</div>
+  <div>
+    <div class="wl-value">{_aval}</div>
+    {'<div class="wl-label">' + _albl + '</div>' if _albl else ''}
+  </div>
+  <div style="margin-left:auto;text-align:right;">
+    <span class="{'badge-critical' if _hit_count > 0 else 'badge-info'}" title="Total hits">{_hit_count} hit{'s' if _hit_count != 1 else ''}</span>
+    {'<span class="badge-low" style="margin-left:4px;">ACTIVE</span>' if _active else '<span class="badge-medium" style="margin-left:4px;">PAUSED</span>'}
+  </div>
+</div>""", unsafe_allow_html=True)
+                with col_del:
+                    if st.button("✕", key=_btn_key, help="Remove from watchlist"):
+                        try:
+                            from sqlalchemy import text as _text
+                            _engine = get_engine()
+                            with _engine.connect() as _conn:
+                                _conn.execute(_text("DELETE FROM watched_assets WHERE id = :id"), {"id": int(_aid)})
+                                _conn.commit()
+                            load_watchlist_data.clear()
+                            st.rerun()
+                        except Exception as _e:
+                            st.error(str(_e))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ALERTS
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_alerts:
+    st.markdown('<p class="section-label"><i class="bi bi-bell-fill bi-sm icon-error"></i>&nbsp; Watchlist Alerts</p>', unsafe_allow_html=True)
+
+    if hits_df.empty:
+        st.info(
+            "No watchlist hits yet. Once the collector detects matches between your "
+            "watched assets (⚑ Watchlist tab) and incoming IOC feeds, alerts appear here."
+        )
+    else:
+        from datetime import timedelta as _td
+        # KPI strip
+        al1, al2, al3, al4 = st.columns(4)
+        _total_hits   = len(hits_df)
+        _open_hits    = int((hits_df["alerted"] == False).sum()) if "alerted" in hits_df.columns else _total_hits
+        _crit_hits    = int(hits_df["severity"].isin(["critical", "high"]).sum()) if "severity" in hits_df.columns else 0
+        _24h_cut      = pd.Timestamp.now(tz="UTC") - _td(hours=24)
+        _hit_ts       = pd.to_datetime(hits_df.get("hit_at", pd.Series(dtype="object")), utc=True, errors="coerce")
+        _new_24h_hits = int((_hit_ts >= _24h_cut).sum())
+        with al1: st.metric("Total Hits",     f"{_total_hits:,}")
+        with al2: st.metric("Unacknowledged", f"{_open_hits:,}")
+        with al3: st.metric("Critical / High",f"{_crit_hits:,}")
+        with al4: st.metric("New (24 h)",     f"{_new_24h_hits:,}")
+
+        st.divider()
+
+        # Filters
+        _af1, _af2, _af3 = st.columns(3)
+        with _af1:
+            _sev_opts = sorted(hits_df["severity"].dropna().unique().tolist()) if "severity" in hits_df.columns else []
+            _al_sev = st.multiselect("Severity", _sev_opts, default=_sev_opts, key="al_sev")
+        with _af2:
+            _at_opts = ["All"] + sorted(hits_df["asset_type"].dropna().unique().tolist()) if "asset_type" in hits_df.columns else ["All"]
+            _al_type = st.selectbox("Asset Type", _at_opts, key="al_type")
+        with _af3:
+            _al_unack = st.checkbox("Unacknowledged only", value=False, key="al_unack")
+
+        _fhits = hits_df.copy()
+        if _al_sev and "severity" in _fhits.columns:
+            _fhits = _fhits[_fhits["severity"].isin(_al_sev)]
+        if _al_type != "All" and "asset_type" in _fhits.columns:
+            _fhits = _fhits[_fhits["asset_type"] == _al_type]
+        if _al_unack and "alerted" in _fhits.columns:
+            _fhits = _fhits[_fhits["alerted"] == False]
+
+        st.caption(f"Showing {min(len(_fhits), 100)} of {len(_fhits):,} hits")
+
+        for _, hit in _fhits.head(100).iterrows():
+            _sev     = str(hit.get("severity", "medium"))
+            _aval    = str(hit.get("asset_value", ""))
+            _atype   = str(hit.get("asset_type", ""))
+            _albl    = str(hit.get("label") or "")
+            _ioc_val = str(hit.get("ioc_value", ""))
+            _src     = str(hit.get("hit_source", ""))
+            _ctx     = str(hit.get("context_snippet") or "")[:300]
+            _ts      = hit.get("hit_at")
+            _ts_str  = _ts.strftime("%Y-%m-%d %H:%M UTC") if hasattr(_ts, "strftime") else "—"
+            _badge   = f'<span class="badge-{_sev}">{_sev.upper()}</span>'
+            _alerted = bool(hit.get("alerted", False))
+            _alerted_html = '<span style="font-size:0.68rem;color:#3d5a80;margin-left:8px;">✓ sent</span>' if _alerted else ""
+
+            st.markdown(f"""
+<div class="alert-card {_sev}">
+  <div class="alert-title">{_badge}{_alerted_html} &nbsp; <span class="wl-type">{_atype}</span> <span style="color:#c8d8f0">{_aval}</span>
+    {(' · <span style="color:#5a7fa8;font-size:0.78rem;">' + _albl + '</span>') if _albl else ''}
+  </div>
+  <div class="alert-meta">
+    <i class="bi bi-crosshair"></i>&nbsp;IOC: <span class="ioc-val">{_ioc_val}</span> &nbsp;·&nbsp;
+    <i class="bi bi-broadcast"></i>&nbsp;{_src} &nbsp;·&nbsp;
+    <i class="bi bi-clock"></i>&nbsp;{_ts_str}
+  </div>
+  {'<div class="alert-ctx">' + _ctx + '</div>' if _ctx else ''}
+</div>""", unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CAMPAIGNS
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_campaigns:
+    st.markdown('<p class="section-label"><i class="bi bi-diagram-2-fill bi-sm icon-accent"></i>&nbsp; Campaign Tracker</p>', unsafe_allow_html=True)
+
+    cam_c1, cam_c2 = st.columns([3, 1])
+    with cam_c2:
+        st.markdown("#### New Campaign")
+        _cam_name  = st.text_input("Campaign name", key="cam_name_in", placeholder="Operation ShadowVault")
+        _cam_actor = st.text_input("Threat actor", key="cam_actor_in", placeholder="APT28")
+        _cam_obj   = st.text_input("Objective", key="cam_obj_in",   placeholder="Espionage / Data exfil")
+        _cam_status = st.selectbox("Status", ["active", "monitoring", "resolved"], key="cam_status_in")
+        _cam_desc  = st.text_area("Description", key="cam_desc_in", height=80)
+        if st.button("➕  Create Campaign", key="cam_create", use_container_width=True, type="primary"):
+            if _cam_name.strip():
+                try:
+                    from sqlalchemy import text as _text
+                    _engine = get_engine()
+                    with _engine.connect() as _conn:
+                        _conn.execute(_text(
+                            """INSERT INTO campaigns (name, threat_actor, objective, status, description, first_seen)
+                               VALUES (:n, :a, :o, :s, :d, NOW())
+                               ON CONFLICT DO NOTHING"""
+                        ), {"n": _cam_name.strip(), "a": _cam_actor.strip() or None,
+                            "o": _cam_obj.strip() or None,  "s": _cam_status,
+                            "d": _cam_desc.strip() or None})
+                        _conn.commit()
+                    load_campaigns_data.clear()
+                    st.success("Campaign created.")
+                    st.rerun()
+                except Exception as _e:
+                    st.error(f"Failed: {_e}")
+            else:
+                st.warning("Campaign name is required.")
+
+    with cam_c1:
+        if campaigns_df.empty:
+            st.info("No campaigns tracked yet. Create your first campaign using the form →")
+        else:
+            # Summary metrics
+            _cm1, _cm2, _cm3 = st.columns(3)
+            _active_camp = int((campaigns_df["status"] == "active").sum()) if "status" in campaigns_df.columns else 0
+            with _cm1: st.metric("Total Campaigns", len(campaigns_df))
+            with _cm2: st.metric("Active",          _active_camp)
+            with _cm3: st.metric("Actors Tracked",  int(campaigns_df["threat_actor"].dropna().nunique()) if "threat_actor" in campaigns_df.columns else 0)
+
+            st.divider()
+
+            _stat_filter = st.selectbox("Filter by status", ["All", "active", "monitoring", "resolved"], key="cam_stat_filter")
+            _cam_show = campaigns_df if _stat_filter == "All" else campaigns_df[campaigns_df["status"] == _stat_filter]
+
+            for _, camp in _cam_show.iterrows():
+                _cname   = str(camp.get("name", "Unnamed Campaign"))
+                _cactor  = str(camp.get("threat_actor") or "Unknown")
+                _cobj    = str(camp.get("objective") or "")
+                _cstat   = str(camp.get("status", "unknown"))
+                _cdesc   = str(camp.get("description") or "")
+                _cstart  = camp.get("first_seen")
+                _clast   = camp.get("last_seen")
+                _cs_str  = _cstart.strftime("%Y-%m-%d") if hasattr(_cstart, "strftime") else "?"
+                _cl_str  = _clast.strftime("%Y-%m-%d") if hasattr(_clast, "strftime") else "ongoing"
+                _stat_color = {"active": "#ff4d6d", "monitoring": "#ffd166", "resolved": "#06d6a0"}.get(_cstat, "#38bdf8")
+
+                st.markdown(f"""
+<div class="campaign-card">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+    <div class="campaign-name">{_cname}</div>
+    <span style="font-size:0.68rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;
+                 padding:2px 10px;border-radius:20px;background:rgba(0,0,0,0.3);
+                 border:1px solid {_stat_color};color:{_stat_color};">{_cstat.upper()}</span>
+  </div>
+  <div class="campaign-meta">
+    <i class="bi bi-person-badge-fill" style="color:#60a5fa"></i>&nbsp;{_cactor}
+    {('&nbsp;·&nbsp;<i class="bi bi-bullseye"></i>&nbsp;' + _cobj) if _cobj else ''}
+    &nbsp;·&nbsp;<i class="bi bi-calendar3"></i>&nbsp;{_cs_str} → {_cl_str}
+  </div>
+  {'<div class="campaign-desc">' + _cdesc[:300] + ('…' if len(_cdesc) > 300 else '') + '</div>' if _cdesc else ''}
+</div>""", unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # FEED HEALTH
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_health:
@@ -1874,3 +2297,259 @@ with tab_admin:
         st.markdown("<br>", unsafe_allow_html=True)
         kw_pill_html = "".join(f'<span class="kw-pill">{k}</span>' for k in _kw_display)
         st.markdown(f'<div><span style="font-size:0.72rem;color:#3d5a80;text-transform:uppercase;letter-spacing:0.1em;font-weight:700;">Active Keywords:</span><br>{kw_pill_html}</div>', unsafe_allow_html=True)
+
+    # ── IOC Enrichment API Keys ───────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("""
+<div class="admin-section">
+  <div class="admin-section-title">
+    <i class="bi bi-shield-check bi-md"></i> IOC Enrichment API Keys
+  </div>
+</div>""", unsafe_allow_html=True)
+    with st.container():
+        _enr_c1, _enr_c2, _enr_c3 = st.columns(3)
+        with _enr_c1:
+            _vt_val = _cfg.get("enrichment_vt_key", "")
+            _vt_key = st.text_input(
+                "VirusTotal API Key",
+                value=_vt_val,
+                type="password",
+                key="adm_vt_key",
+                help="v3 API key from virustotal.com — enriches IPs, domains, hashes, URLs",
+            )
+        with _enr_c2:
+            _gn_val = _cfg.get("enrichment_gn_key", "")
+            _gn_key = st.text_input(
+                "GreyNoise API Key",
+                value=_gn_val,
+                type="password",
+                key="adm_gn_key",
+                help="Community or Enterprise key from greynoise.io — IP noise classification",
+            )
+        with _enr_c3:
+            _sh_val = _cfg.get("enrichment_shodan_key", "")
+            _sh_key = st.text_input(
+                "Shodan API Key",
+                value=_sh_val,
+                type="password",
+                key="adm_sh_key",
+                help="API key from shodan.io — host scanning & open ports",
+            )
+        _enr_c4, _enr_c5 = st.columns([2, 2])
+        with _enr_c4:
+            _gh_val = _cfg.get("github_token", "")
+            _gh_key = st.text_input(
+                "GitHub Token (for secret scanning)",
+                value=_gh_val,
+                type="password",
+                key="adm_gh_token",
+                help="Personal access token from github.com — read:repo scope for code search",
+            )
+
+        _enr_save_col, _enr_status_col = st.columns([1, 3])
+        with _enr_save_col:
+            if st.button("💾  Save Enrichment Keys", key="adm_enr_save", type="primary"):
+                ok2 = save_platform_settings({
+                    "enrichment_vt_key":     _vt_key.strip(),
+                    "enrichment_gn_key":     _gn_key.strip(),
+                    "enrichment_shodan_key": _sh_key.strip(),
+                    "github_token":          _gh_key.strip(),
+                })
+                if ok2:
+                    st.session_state["adm_enr_save_ok"] = True
+                    st.rerun()
+        with _enr_status_col:
+            if st.session_state.get("adm_enr_save_ok"):
+                st.markdown("""
+<div class="admin-save-success">
+  <i class="bi bi-check-circle-fill"></i> Enrichment keys saved — collector will use them on next run.
+</div>""", unsafe_allow_html=True)
+                st.session_state["adm_enr_save_ok"] = False
+
+    # ── Alert Channels ────────────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("""
+<div class="admin-section">
+  <div class="admin-section-title">
+    <i class="bi bi-bell-fill bi-md"></i> Alert Channels
+  </div>
+</div>""", unsafe_allow_html=True)
+    with st.container():
+        st.markdown("**Slack / Teams Webhooks**")
+        _sl_c1, _sl_c2 = st.columns(2)
+        with _sl_c1:
+            _slack_wh = st.text_input(
+                "Slack Incoming Webhook URL",
+                value=_cfg.get("alert_slack_webhook", ""),
+                type="password",
+                key="adm_slack_wh",
+                help="https://hooks.slack.com/services/…",
+            )
+        with _sl_c2:
+            _teams_wh = st.text_input(
+                "Microsoft Teams Webhook URL",
+                value=_cfg.get("alert_teams_webhook", ""),
+                type="password",
+                key="adm_teams_wh",
+                help="Power Automate or Connector URL for your Teams channel",
+            )
+
+        st.markdown("<br>**Email Alerts (SMTP)**", unsafe_allow_html=True)
+        _email_enabled_val = _cfg.get("alert_email_enabled", "false").lower() == "true"
+        _email_toggle = st.toggle("Enable email alerts", value=_email_enabled_val, key="adm_email_toggle")
+        _em_c1, _em_c2, _em_c3 = st.columns(3)
+        with _em_c1:
+            _smtp_host = st.text_input("SMTP Host", value=_cfg.get("smtp_host", ""), key="adm_smtp_host", placeholder="smtp.gmail.com")
+            _smtp_port = st.text_input("SMTP Port", value=_cfg.get("smtp_port", "587"), key="adm_smtp_port")
+        with _em_c2:
+            _smtp_user = st.text_input("SMTP Username", value=_cfg.get("smtp_user", ""), key="adm_smtp_user")
+            _smtp_pass = st.text_input("SMTP Password", value=_cfg.get("smtp_pass", ""), type="password", key="adm_smtp_pass")
+        with _em_c3:
+            _from_email = st.text_input("From Email", value=_cfg.get("alert_from_email", ""), key="adm_from_email")
+            _to_email   = st.text_input("To Email",   value=_cfg.get("alert_to_email", ""),   key="adm_to_email")
+        st.markdown('<div class="admin-hint">Alerts are sent for Critical and High severity watchlist hits. STARTTLS is used automatically.</div>', unsafe_allow_html=True)
+
+        _alc_save_col, _alc_status_col = st.columns([1, 3])
+        with _alc_save_col:
+            if st.button("💾  Save Alert Channels", key="adm_alc_save", type="primary"):
+                ok3 = save_platform_settings({
+                    "alert_slack_webhook": _slack_wh.strip(),
+                    "alert_teams_webhook": _teams_wh.strip(),
+                    "alert_email_enabled": "true" if _email_toggle else "false",
+                    "smtp_host":           _smtp_host.strip(),
+                    "smtp_port":           _smtp_port.strip(),
+                    "smtp_user":           _smtp_user.strip(),
+                    "smtp_pass":           _smtp_pass.strip(),
+                    "alert_from_email":    _from_email.strip(),
+                    "alert_to_email":      _to_email.strip(),
+                })
+                if ok3:
+                    st.session_state["adm_alc_save_ok"] = True
+                    st.rerun()
+        with _alc_status_col:
+            if st.session_state.get("adm_alc_save_ok"):
+                st.markdown("""
+<div class="admin-save-success">
+  <i class="bi bi-check-circle-fill"></i> Alert channels saved — active on next collector cycle.
+</div>""", unsafe_allow_html=True)
+                st.session_state["adm_alc_save_ok"] = False
+
+    # ── REST API Key Management ───────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("""
+<div class="admin-section">
+  <div class="admin-section-title">
+    <i class="bi bi-key-fill bi-md"></i> REST API Keys
+  </div>
+</div>""", unsafe_allow_html=True)
+    with st.container():
+        st.markdown(
+            '<span style="font-size:0.78rem;color:#5a7fa8;">API keys grant external tools (SIEMs, SOARs, firewalls) '
+            'access to the VANTELLIGENCE REST API and TAXII 2.1 feed. '
+            'Keys are stored as SHA-256 hashes — copy the raw key immediately after creation.</span>',
+            unsafe_allow_html=True,
+        )
+        # Show existing keys
+        try:
+            from sqlalchemy import text as _text
+            _engine = get_engine()
+            _api_keys_df = pd.read_sql(
+                "SELECT id, name, permissions, created_at, last_used_at, active FROM api_keys ORDER BY created_at DESC",
+                _engine,
+            )
+        except Exception:
+            _api_keys_df = pd.DataFrame()
+
+        if not _api_keys_df.empty:
+            for _, _ak in _api_keys_df.iterrows():
+                _ak_active = bool(_ak.get("active", True))
+                _lu = _ak.get("last_used_at")
+                _lu_str = _lu.strftime("%Y-%m-%d %H:%M") if hasattr(_lu, "strftime") else "Never"
+                _ca = _ak.get("created_at")
+                _ca_str = _ca.strftime("%Y-%m-%d") if hasattr(_ca, "strftime") else "?"
+                _perms = str(_ak.get("permissions") or "read")
+                _ak_id = _ak.get("id")
+                _ak_col, _ak_del_col = st.columns([10, 1])
+                with _ak_col:
+                    st.markdown(
+                        f'<div style="background:#0c1628;border:1px solid #142038;border-radius:8px;padding:10px 16px;margin-bottom:5px;">'
+                        f'<span style="font-weight:700;color:#c8d8f0;">{_ak["name"]}</span>'
+                        f'&nbsp;&nbsp;<span class="feed-tag">{_perms}</span>'
+                        f'{"&nbsp;<span class=\'badge-low\'>ACTIVE</span>" if _ak_active else "&nbsp;<span class=\'badge-medium\'>REVOKED</span>"}'
+                        f'<span style="float:right;font-size:0.72rem;color:#3d5a80;">Created {_ca_str} &nbsp;·&nbsp; Last used: {_lu_str}</span>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+                with _ak_del_col:
+                    if st.button("✕", key=f"ak_del_{_ak_id}", help="Revoke key"):
+                        try:
+                            with _engine.connect() as _conn:
+                                _conn.execute(_text("UPDATE api_keys SET active = false WHERE id = :id"), {"id": int(_ak_id)})
+                                _conn.commit()
+                            st.rerun()
+                        except Exception as _e:
+                            st.error(str(_e))
+        else:
+            st.info("No API keys yet. Generate one below.")
+
+        st.markdown("<br>**Generate a new API key**")
+        _nk_c1, _nk_c2, _nk_c3 = st.columns([2, 1, 1])
+        with _nk_c1:
+            _new_key_name = st.text_input("Key name / description", key="adm_new_key_name", placeholder="Splunk SIEM integration")
+        with _nk_c2:
+            _new_key_perms = st.selectbox("Permissions", ["read", "read,taxii", "read,write", "admin"], key="adm_new_key_perms")
+        with _nk_c3:
+            st.markdown("<br>", unsafe_allow_html=True)
+            _gen_key_btn = st.button("🔑  Generate Key", key="adm_gen_key", use_container_width=True, type="primary")
+
+        if _gen_key_btn and _new_key_name.strip():
+            import secrets as _secrets
+            import hashlib as _hashlib
+            from sqlalchemy import text as _text
+            _raw_key   = "vip_" + _secrets.token_hex(32)
+            _key_hash  = _hashlib.sha256(_raw_key.encode()).hexdigest()
+            try:
+                _engine = get_engine()
+                with _engine.connect() as _conn:
+                    _conn.execute(_text(
+                        """INSERT INTO api_keys (name, key_hash, permissions, active)
+                           VALUES (:n, :h, :p, true)"""
+                    ), {"n": _new_key_name.strip(), "h": _key_hash, "p": _new_key_perms})
+                    _conn.commit()
+                st.success("Key generated! Copy it now — it will not be shown again:")
+                st.code(_raw_key, language="text")
+                st.markdown(
+                    f'<div class="admin-hint">SHA-256: {_key_hash[:32]}…</div>',
+                    unsafe_allow_html=True,
+                )
+                _api_p = os.getenv("API_PORT", "8000")
+                st.markdown(
+                    f"**Usage:** `curl -H 'X-API-Key: {_raw_key[:20]}…' "
+                    f"http://your-server:{_api_p}/api/v1/iocs`",
+                    unsafe_allow_html=True,
+                )
+            except Exception as _e:
+                st.error(f"Failed to store key: {_e}")
+
+        # API endpoint quick-reference
+        st.divider()
+        _api_port = os.getenv("API_PORT", "8000")
+        st.markdown(f"""
+<div style="background:#0c1628;border:1px solid #142038;border-radius:10px;padding:16px 20px;">
+  <div style="font-size:0.72rem;font-weight:800;text-transform:uppercase;letter-spacing:0.12em;color:#38bdf8;margin-bottom:12px;">
+    <i class="bi bi-code-slash"></i>&nbsp; REST API Quick Reference &nbsp;·&nbsp; port {_api_port}
+  </div>
+  <div style="font-family:'JetBrains Mono',monospace;font-size:0.74rem;color:#5a7fa8;line-height:2;">
+    <span style="color:#38bdf8">GET</span>  /api/v1/iocs &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; IOC list (filter: type, value, limit)<br>
+    <span style="color:#38bdf8">GET</span>  /api/v1/reports &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Threat reports<br>
+    <span style="color:#38bdf8">GET</span>  /api/v1/cves &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; CVE records (filter: min_cvss, kev_only)<br>
+    <span style="color:#38bdf8">GET</span>  /api/v1/actors &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Threat actor profiles<br>
+    <span style="color:#38bdf8">GET</span>  /api/v1/watchlist &nbsp;&nbsp;&nbsp;&nbsp; Watched assets<br>
+    <span style="color:#38bdf8">GET</span>  /api/v1/alerts &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Watchlist hits<br>
+    <span style="color:#38bdf8">GET</span>  /api/v1/stix/bundle &nbsp;&nbsp; STIX 2.1 bundle export<br>
+    <span style="color:#38bdf8">GET</span>  /api/v1/blocklist/ips &nbsp; IP blocklist (plain text)<br>
+    <span style="color:#38bdf8">GET</span>  /api/v1/blocklist/domains Domain blocklist<br>
+    <span style="color:#06d6a0">TAX</span>  /taxii/ &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; TAXII 2.1 discovery endpoint<br>
+    <span style="color:#b48ef5">DOC</span>  /docs &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Swagger UI (interactive API browser)
+  </div>
+</div>""", unsafe_allow_html=True)
