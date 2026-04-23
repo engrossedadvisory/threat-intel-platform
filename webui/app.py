@@ -1553,21 +1553,20 @@ with tab_darkweb:
     if darkweb_df.empty:
         if _dw_enabled:
             st.info("No dark web mentions found yet — the collector will scan at its next scheduled interval.")
-        st.stop()
-
-    # ── Alert ticker for critical/high ────────────────────────────────────────
-    _alerts = darkweb_df[darkweb_df["severity"].isin(["critical", "high"])].head(5)
-    if not _alerts.empty:
-        st.markdown('<p class="section-label"><i class="bi bi-exclamation-triangle-fill bi-sm icon-error"></i>&nbsp; Active Alerts</p>', unsafe_allow_html=True)
-        for _, row in _alerts.iterrows():
-            sev = str(row.get("severity", "medium"))
-            kw  = str(row.get("keyword_matched", ""))
-            ttl = str(row.get("title", ""))[:120]
-            src = str(row.get("source_name", ""))
-            ts  = row.get("first_seen")
-            ts_str = ts.strftime("%Y-%m-%d %H:%M") if hasattr(ts, "strftime") else "—"
-            badge = f'<span class="badge-{sev}">{sev.upper()}</span>'
-            st.markdown(f"""
+    else:
+        # ── Alert ticker for critical/high ────────────────────────────────────
+        _alerts = darkweb_df[darkweb_df["severity"].isin(["critical", "high"])].head(5)
+        if not _alerts.empty:
+            st.markdown('<p class="section-label"><i class="bi bi-exclamation-triangle-fill bi-sm icon-error"></i>&nbsp; Active Alerts</p>', unsafe_allow_html=True)
+            for _, row in _alerts.iterrows():
+                sev    = str(row.get("severity", "medium"))
+                kw     = str(row.get("keyword_matched", ""))
+                ttl    = str(row.get("title", ""))[:120]
+                src    = str(row.get("source_name", ""))
+                ts     = row.get("first_seen")
+                ts_str = ts.strftime("%Y-%m-%d %H:%M") if hasattr(ts, "strftime") else "—"
+                badge  = f'<span class="badge-{sev}">{sev.upper()}</span>'
+                st.markdown(f"""
 <div class="dw-mention-card {sev}">
   <div class="dw-title">{badge}&nbsp; {ttl}</div>
   <div class="dw-meta">
@@ -1576,101 +1575,100 @@ with tab_darkweb:
     <i class="bi bi-clock icon-muted"></i> {ts_str}
   </div>
 </div>""", unsafe_allow_html=True)
+            st.divider()
+
+        # ── Timeline chart ────────────────────────────────────────────────────
+        st.markdown('<p class="section-label"><i class="bi bi-graph-up bi-sm icon-purple"></i>&nbsp; Mention Timeline</p>', unsafe_allow_html=True)
+        _timeline_df = darkweb_df.copy()
+        _timeline_df["date"] = pd.to_datetime(_timeline_df["first_seen"], utc=True, errors="coerce").dt.floor("D")
+        _tl = _timeline_df.groupby(["date", "severity"]).size().reset_index(name="count")
+        if not _tl.empty:
+            _sev_colors = {"critical": "#ff4d6d", "high": "#ff8c42", "medium": "#ffd166", "low": "#06d6a0"}
+            fig_tl = px.bar(
+                _tl, x="date", y="count", color="severity",
+                color_discrete_map=_sev_colors,
+                labels={"date": "Date", "count": "Mentions", "severity": "Severity"},
+                barmode="stack",
+            )
+            fig_tl.update_layout(**_PLOTLY_DARK, height=220)
+            fig_tl.update_traces(hovertemplate="%{x|%b %d}: %{y} mentions<extra></extra>")
+            st.plotly_chart(fig_tl, use_container_width=True)
+
+        # ── Severity & keyword breakdown ──────────────────────────────────────
+        col_sev, col_kw = st.columns(2)
+        with col_sev:
+            st.markdown("#### By Severity")
+            sev_counts = darkweb_df["severity"].value_counts().reset_index()
+            sev_counts.columns = ["Severity", "Count"]
+            _sc = {"critical": "#ff4d6d", "high": "#ff8c42", "medium": "#ffd166", "low": "#06d6a0"}
+            fig_sev = px.pie(
+                sev_counts, names="Severity", values="Count", hole=0.55,
+                color="Severity", color_discrete_map=_sc,
+            )
+            fig_sev.update_layout(**_PLOTLY_DARK, height=260, showlegend=True)
+            fig_sev.update_traces(textposition="outside", textinfo="percent+label",
+                                  hovertemplate="%{label}: %{value}<extra></extra>")
+            st.plotly_chart(fig_sev, use_container_width=True)
+
+        with col_kw:
+            st.markdown("#### Hits per Keyword")
+            kw_counts = darkweb_df["keyword_matched"].value_counts().reset_index()
+            kw_counts.columns = ["Keyword", "Hits"]
+            fig_kw = px.bar(
+                kw_counts, x="Hits", y="Keyword", orientation="h",
+                color="Hits", color_continuous_scale=[[0, "#2d1458"], [1, "#954ce9"]],
+            )
+            fig_kw.update_coloraxes(showscale=False)
+            fig_kw.update_layout(**_PLOTLY_DARK, height=260)
+            st.plotly_chart(fig_kw, use_container_width=True)
+
         st.divider()
 
-    # ── Timeline chart ────────────────────────────────────────────────────────
-    st.markdown('<p class="section-label"><i class="bi bi-graph-up bi-sm icon-purple"></i>&nbsp; Mention Timeline</p>', unsafe_allow_html=True)
-    _timeline_df = darkweb_df.copy()
-    _timeline_df["date"] = pd.to_datetime(_timeline_df["first_seen"], utc=True, errors="coerce").dt.floor("D")
-    _tl = _timeline_df.groupby(["date", "severity"]).size().reset_index(name="count")
-    if not _tl.empty:
-        _sev_colors = {"critical": "#ff4d6d", "high": "#ff8c42", "medium": "#ffd166", "low": "#06d6a0"}
-        fig_tl = px.bar(
-            _tl, x="date", y="count", color="severity",
-            color_discrete_map=_sev_colors,
-            labels={"date": "Date", "count": "Mentions", "severity": "Severity"},
-            barmode="stack",
-        )
-        fig_tl.update_layout(**_PLOTLY_DARK, height=220)
-        fig_tl.update_traces(hovertemplate="%{x|%b %d}: %{y} mentions<extra></extra>")
-        st.plotly_chart(fig_tl, use_container_width=True)
+        # ── Filters ──────────────────────────────────────────────────────────
+        st.markdown('<p class="section-label"><i class="bi bi-funnel-fill bi-sm icon-purple"></i>&nbsp; Mention Details</p>', unsafe_allow_html=True)
+        _fc1, _fc2, _fc3 = st.columns([2, 2, 2])
+        with _fc1:
+            _sev_filter = st.multiselect(
+                "Severity", ["critical", "high", "medium", "low"],
+                default=["critical", "high", "medium", "low"],
+                key="dw_sev_filter",
+            )
+        with _fc2:
+            _kw_opts = ["All"] + sorted(darkweb_df["keyword_matched"].dropna().unique().tolist())
+            _kw_filter = st.selectbox("Keyword", _kw_opts, key="dw_kw_filter")
+        with _fc3:
+            _src_opts = ["All"] + sorted(darkweb_df["source_name"].dropna().unique().tolist())
+            _src_filter = st.selectbox("Source", _src_opts, key="dw_src_filter")
 
-    # ── Severity & keyword breakdown ──────────────────────────────────────────
-    col_sev, col_kw = st.columns(2)
+        _filtered = darkweb_df[darkweb_df["severity"].isin(_sev_filter)]
+        if _kw_filter != "All":
+            _filtered = _filtered[_filtered["keyword_matched"] == _kw_filter]
+        if _src_filter != "All":
+            _filtered = _filtered[_filtered["source_name"] == _src_filter]
 
-    with col_sev:
-        st.markdown("#### By Severity")
-        sev_counts = darkweb_df["severity"].value_counts().reset_index()
-        sev_counts.columns = ["Severity", "Count"]
-        _sc = {"critical": "#ff4d6d", "high": "#ff8c42", "medium": "#ffd166", "low": "#06d6a0"}
-        fig_sev = px.pie(
-            sev_counts, names="Severity", values="Count", hole=0.55,
-            color="Severity", color_discrete_map=_sc,
-        )
-        fig_sev.update_layout(**_PLOTLY_DARK, height=260, showlegend=True)
-        fig_sev.update_traces(textposition="outside", textinfo="percent+label",
-                              hovertemplate="%{label}: %{value}<extra></extra>")
-        st.plotly_chart(fig_sev, use_container_width=True)
+        st.caption(f"Showing {len(_filtered):,} of {len(darkweb_df):,} mentions")
 
-    with col_kw:
-        st.markdown("#### Hits per Keyword")
-        kw_counts = darkweb_df["keyword_matched"].value_counts().reset_index()
-        kw_counts.columns = ["Keyword", "Hits"]
-        fig_kw = px.bar(
-            kw_counts, x="Hits", y="Keyword", orientation="h",
-            color="Hits", color_continuous_scale=[[0, "#2d1458"], [1, "#954ce9"]],
-        )
-        fig_kw.update_coloraxes(showscale=False)
-        fig_kw.update_layout(**_PLOTLY_DARK, height=260)
-        st.plotly_chart(fig_kw, use_container_width=True)
+        # ── Mention cards ─────────────────────────────────────────────────────
+        for _, row in _filtered.head(50).iterrows():
+            sev         = str(row.get("severity", "medium"))
+            title_txt   = str(row.get("title", "Untitled"))[:200]
+            source_name = str(row.get("source_name", ""))
+            source_url  = str(row.get("source_url", ""))
+            keyword     = str(row.get("keyword_matched", ""))
+            actor       = str(row.get("actor_handle", "Unknown"))
+            rec_est     = row.get("record_estimate")
+            snippet_txt = str(row.get("snippet", ""))[:300]
+            ai_sum      = str(row.get("ai_summary", ""))
+            dtypes_raw  = row.get("data_types") or []
+            dtypes_list = dtypes_raw if isinstance(dtypes_raw, list) else []
+            ts          = row.get("first_seen")
+            ts_str      = ts.strftime("%Y-%m-%d %H:%M UTC") if hasattr(ts, "strftime") else "—"
+            badge_html  = f'<span class="badge-{sev}">{sev.upper()}</span>'
+            dtype_html  = " ".join(f'<span class="feed-tag">{d}</span>' for d in dtypes_list[:6])
+            rec_html    = f'&nbsp;·&nbsp;<i class="bi bi-database icon-muted"></i> {rec_est}' if rec_est else ""
 
-    st.divider()
-
-    # ── Filters ───────────────────────────────────────────────────────────────
-    st.markdown('<p class="section-label"><i class="bi bi-funnel-fill bi-sm icon-purple"></i>&nbsp; Mention Details</p>', unsafe_allow_html=True)
-    _fc1, _fc2, _fc3 = st.columns([2, 2, 2])
-    with _fc1:
-        _sev_filter = st.multiselect(
-            "Severity", ["critical", "high", "medium", "low"],
-            default=["critical", "high", "medium", "low"],
-            key="dw_sev_filter",
-        )
-    with _fc2:
-        _kw_opts = ["All"] + sorted(darkweb_df["keyword_matched"].dropna().unique().tolist())
-        _kw_filter = st.selectbox("Keyword", _kw_opts, key="dw_kw_filter")
-    with _fc3:
-        _src_opts = ["All"] + sorted(darkweb_df["source_name"].dropna().unique().tolist())
-        _src_filter = st.selectbox("Source", _src_opts, key="dw_src_filter")
-
-    _filtered = darkweb_df[darkweb_df["severity"].isin(_sev_filter)]
-    if _kw_filter != "All":
-        _filtered = _filtered[_filtered["keyword_matched"] == _kw_filter]
-    if _src_filter != "All":
-        _filtered = _filtered[_filtered["source_name"] == _src_filter]
-
-    st.caption(f"Showing {len(_filtered):,} of {len(darkweb_df):,} mentions")
-
-    # ── Mention cards ─────────────────────────────────────────────────────────
-    for _, row in _filtered.head(50).iterrows():
-        sev         = str(row.get("severity", "medium"))
-        title_txt   = str(row.get("title", "Untitled"))[:200]
-        source_name = str(row.get("source_name", ""))
-        source_url  = str(row.get("source_url", ""))
-        keyword     = str(row.get("keyword_matched", ""))
-        actor       = str(row.get("actor_handle", "Unknown"))
-        rec_est     = row.get("record_estimate")
-        snippet_txt = str(row.get("snippet", ""))[:300]
-        ai_sum      = str(row.get("ai_summary", ""))
-        dtypes_raw  = row.get("data_types") or []
-        dtypes_list = dtypes_raw if isinstance(dtypes_raw, list) else []
-        ts          = row.get("first_seen")
-        ts_str      = ts.strftime("%Y-%m-%d %H:%M UTC") if hasattr(ts, "strftime") else "—"
-        badge_html  = f'<span class="badge-{sev}">{sev.upper()}</span>'
-        dtype_html  = " ".join(f'<span class="feed-tag">{d}</span>' for d in dtypes_list[:6])
-        rec_html    = f'&nbsp;·&nbsp;<i class="bi bi-database icon-muted"></i> {rec_est}' if rec_est else ""
-
-        with st.expander(f"{sev.upper()[:1].upper()} · {title_txt[:100]}", expanded=False):
-            st.markdown(f"""
+            with st.expander(f"{sev.upper()[:1]} · {title_txt[:100]}", expanded=False):
+                st.markdown(f"""
 <div>
   <div style="margin-bottom:8px;">{badge_html} &nbsp; {dtype_html}</div>
   <div class="dw-meta" style="margin-bottom:6px;">
@@ -1682,16 +1680,16 @@ with tab_darkweb:
   {'<div class="dw-snippet">' + snippet_txt + '</div>' if snippet_txt else ''}
   {'<div style="margin-top:8px;padding:8px 12px;background:rgba(149,76,233,0.06);border-radius:6px;font-size:0.78rem;color:#9070b0;"><i class="bi bi-cpu icon-purple"></i>&nbsp;<strong>AI Analysis:</strong> ' + ai_sum + '</div>' if ai_sum else ''}
 </div>""", unsafe_allow_html=True)
-            if source_url and (".onion" in source_url or source_url.startswith("http")):
-                st.markdown(
-                    f'<div style="margin-top:8px;"><i class="bi bi-box-arrow-up-right icon-muted"></i>'
-                    f'&nbsp;<a href="{source_url}" target="_blank" style="color:#6040a0;font-size:0.75rem;">'
-                    f'View source (opens in new tab)</a></div>',
-                    unsafe_allow_html=True,
-                )
+                if source_url and (".onion" in source_url or source_url.startswith("http")):
+                    st.markdown(
+                        f'<div style="margin-top:8px;"><i class="bi bi-box-arrow-up-right icon-muted"></i>'
+                        f'&nbsp;<a href="{source_url}" target="_blank" style="color:#6040a0;font-size:0.75rem;">'
+                        f'View source (opens in new tab)</a></div>',
+                        unsafe_allow_html=True,
+                    )
 
-    if _filtered.empty:
-        st.info("No mentions match the current filters.")
+        if _filtered.empty:
+            st.info("No mentions match the current filters.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
