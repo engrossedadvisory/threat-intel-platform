@@ -102,4 +102,24 @@ class MITREMitigation(Base):
     technique = relationship("MITRETechnique", back_populates="mitigations")
 
 
+class DarkWebMention(Base):
+    __tablename__ = "dark_web_mentions"
+    id              = Column(Integer, primary_key=True, index=True)
+    source_name     = Column(String(200))
+    source_url      = Column(String(500))
+    keyword_matched = Column(String(200), index=True)
+    title           = Column(String(500))
+    snippet         = Column(Text)
+    actor_handle    = Column(String(100))
+    record_estimate = Column(String(100))
+    data_types      = Column(JSON, default=list)
+    severity        = Column(String(20), default="medium", index=True)
+    ai_summary      = Column(Text)
+    first_seen      = Column(DateTime(timezone=True),
+                             default=lambda: datetime.now(timezone.utc))
+    last_seen       = Column(DateTime(timezone=True),
+                             default=lambda: datetime.now(timezone.utc))
+    fingerprint     = Column(String(64), unique=True, index=True)
+
+
 Base.metadata.create_all(bind=engine)

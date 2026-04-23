@@ -21,11 +21,26 @@ services:
       retries: 5
     restart: unless-stopped
 
+  tor-proxy:
+    image: dperson/torproxy:latest
+    restart: unless-stopped
+    networks:
+      - tor_net
+    environment:
+      - TOR_MaxCircuitDirtiness=600
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s --socks5 127.0.0.1:9050 https://check.torproject.org/api/ip | grep -q IsTor || exit 1"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
+
   collector:
     build: ./collector
     depends_on:
       db:
         condition: service_healthy
+      tor-proxy:
     environment:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
@@ -41,11 +56,17 @@ services:
       - OTX_API_KEY=${OTX_API_KEY:-}
       - ABUSECH_API_KEY=${ABUSECH_API_KEY:-}
       - PYTHONUNBUFFERED=1
+      - DARK_WEB_ENABLED=${DARK_WEB_ENABLED:-false}
+      - DARK_WEB_KEYWORDS=${DARK_WEB_KEYWORDS:-}
+      - DARK_WEB_ONION_SOURCES=${DARK_WEB_ONION_SOURCES:-}
+      - DARK_WEB_INTERVAL=${DARK_WEB_INTERVAL:-21600}
+      - TOR_PROXY_URL=socks5h://tor-proxy:9050
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
       - app_net
       - db_net
+      - tor_net
     restart: unless-stopped
 
   webui:
@@ -76,3 +97,7 @@ services:
 
 volumes:
   pgdata:
+
+networks:
+  tor_net:
+    internal: true

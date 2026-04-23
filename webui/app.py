@@ -303,6 +303,53 @@ hr { border: none !important; border-top: 1px solid #0f2040 !important; margin: 
 .icon-accent  { color: #38bdf8; }
 .icon-muted   { color: #3d5a80; }
 .icon-purple  { color: #b48ef5; }
+
+/* ── Dark Web Monitor ───────────────────────────────────────────────────── */
+.dw-header {
+    background: linear-gradient(135deg, #0a0614 0%, #100820 60%, #0a0614 100%);
+    border: 1px solid #2d1458; border-radius: 10px;
+    padding: 16px 20px; margin-bottom: 16px;
+    display: flex; align-items: center; gap: 14px;
+}
+.dw-tor-badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: rgba(149,76,233,0.1); border: 1px solid rgba(149,76,233,0.35);
+    color: #b48ef5; padding: 3px 12px; border-radius: 20px;
+    font-size: 0.7rem; font-weight: 700; letter-spacing: 0.1em;
+}
+.dw-tor-dot {
+    width: 7px; height: 7px; background: #954ce9; border-radius: 50%;
+    animation: pulse-purple 2s ease-in-out infinite;
+}
+@keyframes pulse-purple {
+    0%,100% { opacity:1; box-shadow: 0 0 0 0 rgba(149,76,233,0.7); }
+    50%      { opacity:0.6; box-shadow: 0 0 0 5px rgba(149,76,233,0); }
+}
+.dw-mention-card {
+    background: linear-gradient(145deg, #0e0a1c, #0a0614);
+    border: 1px solid #1e1040; border-left: 3px solid #2d1458;
+    border-radius: 8px; padding: 14px 18px; margin-bottom: 6px;
+    transition: border-color .15s, box-shadow .15s;
+}
+.dw-mention-card:hover {
+    border-color: #3d1a80 !important;
+    border-left-color: #954ce9 !important;
+    box-shadow: 0 4px 20px rgba(149,76,233,0.08);
+}
+.dw-mention-card.critical { border-left-color: #ff4d6d !important; }
+.dw-mention-card.high     { border-left-color: #ff8c42 !important; }
+.dw-mention-card.medium   { border-left-color: #ffd166 !important; }
+.dw-mention-card.low      { border-left-color: #06d6a0 !important; }
+.dw-title { font-size:0.88rem; font-weight:600; color:#d0baff; margin-bottom:4px; }
+.dw-meta  { font-size:0.72rem; color:#4a3a6a; font-family:'JetBrains Mono',monospace; }
+.dw-snippet { font-size:0.78rem; color:#7060a0; margin-top:6px; font-style:italic; }
+.dw-actor { font-size:0.72rem; color:#b48ef5; font-family:'JetBrains Mono',monospace; }
+.kw-pill {
+    display:inline-block; background:rgba(149,76,233,0.12);
+    border:1px solid rgba(149,76,233,0.3); color:#b48ef5;
+    padding:3px 10px; border-radius:20px; font-size:0.72rem;
+    font-family:'JetBrains Mono',monospace; margin:2px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -358,6 +405,25 @@ def load_attack_data():
         return techniques, mitigations
     except Exception:
         return pd.DataFrame(), pd.DataFrame()
+
+
+@st.cache_data(ttl=30)
+def load_darkweb_data():
+    """Load dark web mentions — metadata only, no breach content."""
+    engine = get_engine()
+    try:
+        df = pd.read_sql(
+            """SELECT id, source_name, source_url, keyword_matched, title,
+                      snippet, actor_handle, record_estimate, data_types,
+                      severity, ai_summary, first_seen, last_seen
+               FROM dark_web_mentions
+               ORDER BY first_seen DESC LIMIT 500""",
+            engine,
+        )
+        return df
+    except Exception:
+        # Table may not exist yet if collector hasn't run
+        return pd.DataFrame()
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -608,6 +674,7 @@ def analyst_reply(messages: list) -> str:
 # ─── Load data ────────────────────────────────────────────────────────────────
 reports, iocs, cves, feed_status = load_data()
 techniques_df, mitigations_df = load_attack_data()
+darkweb_df = load_darkweb_data()
 
 # ─── Platform header ──────────────────────────────────────────────────────────
 _now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -687,10 +754,10 @@ st.divider()
 
 # ─── Tabs ─────────────────────────────────────────────────────────────────────
 (tab_dash, tab_feed, tab_actors, tab_iocs,
- tab_cves, tab_attack, tab_analyst, tab_health) = st.tabs([
+ tab_cves, tab_attack, tab_analyst, tab_darkweb, tab_health) = st.tabs([
     "◈  Dashboard", "◉  Threat Feed", "⬡  Actors",
     "⊙  IOC Hunt",  "◆  CVE Tracker",
-    "⬢  ATT&CK",    "⊕  AI Analyst",  "◎  Feed Health",
+    "⬢  ATT&CK",    "⊕  AI Analyst",  "◉  Dark Web",  "◎  Feed Health",
 ])
 
 
@@ -1320,6 +1387,231 @@ with tab_analyst:
         if st.button("✕  Clear conversation", key="clear_analyst"):
             st.session_state.analyst_messages = []
             st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DARK WEB MONITOR
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_darkweb:
+    _dw_enabled = os.getenv("DARK_WEB_ENABLED", "false").lower() in ("1", "true", "yes")
+    _dw_keywords_raw = os.getenv("DARK_WEB_KEYWORDS", "")
+    _dw_keywords = [k.strip() for k in _dw_keywords_raw.split(",") if k.strip()]
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    st.markdown("""
+<div class="dw-header">
+  <svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="dwg" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#954ce9"/>
+        <stop offset="100%" stop-color="#c084fc"/>
+      </linearGradient>
+      <filter id="dwglow">
+        <feGaussianBlur stdDeviation="1.5" result="b"/>
+        <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter>
+    </defs>
+    <circle cx="18" cy="18" r="16" stroke="url(#dwg)" stroke-width="1.2" fill="none" filter="url(#dwglow)"/>
+    <circle cx="18" cy="18" r="10" stroke="url(#dwg)" stroke-width="0.7" fill="none" opacity="0.4"/>
+    <circle cx="18" cy="18" r="4"  stroke="url(#dwg)" stroke-width="0.7" fill="none" opacity="0.3"/>
+    <line x1="18" y1="2"  x2="18" y2="8"  stroke="#954ce9" stroke-width="1.8" stroke-linecap="round"/>
+    <line x1="18" y1="28" x2="18" y2="34" stroke="#c084fc" stroke-width="1.8" stroke-linecap="round"/>
+    <line x1="2"  y1="18" x2="8"  y2="18" stroke="#954ce9" stroke-width="1.8" stroke-linecap="round"/>
+    <line x1="28" y1="18" x2="34" y2="18" stroke="#c084fc" stroke-width="1.8" stroke-linecap="round"/>
+  </svg>
+  <div>
+    <div style="font-size:1.1rem;font-weight:800;color:#d0baff;letter-spacing:0.05em;text-transform:uppercase;">
+      Dark Web Monitor
+    </div>
+    <div style="font-size:0.62rem;color:#5a3a80;font-family:'JetBrains Mono',monospace;letter-spacing:0.15em;margin-top:3px;">
+      METADATA ONLY &nbsp;·&nbsp; NO BREACH CONTENT STORED &nbsp;·&nbsp; DEFENSIVE RESEARCH
+    </div>
+  </div>
+  <div style="margin-left:auto;display:flex;gap:10px;align-items:center;">
+    <span class="dw-tor-badge"><span class="dw-tor-dot"></span>TOR PROXY</span>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+    # ── Config banner ─────────────────────────────────────────────────────────
+    if not _dw_enabled:
+        st.warning(
+            "**Dark Web Monitor is disabled.** "
+            "Set `DARK_WEB_ENABLED=true` and `DARK_WEB_KEYWORDS=yourdomain.com` "
+            "in your `.env` file, then rebuild the collector: "
+            "`docker compose up -d --build collector`"
+        )
+    else:
+        if _dw_keywords:
+            kw_pills = "".join(f'<span class="kw-pill">{k}</span>' for k in _dw_keywords)
+            st.markdown(
+                f'<div style="margin-bottom:12px;">Monitoring: {kw_pills}</div>',
+                unsafe_allow_html=True,
+            )
+
+    # ── KPI strip ─────────────────────────────────────────────────────────────
+    dw1, dw2, dw3, dw4 = st.columns(4)
+    if not darkweb_df.empty:
+        total_mentions   = len(darkweb_df)
+        critical_high    = int(darkweb_df["severity"].isin(["critical", "high"]).sum())
+        from datetime import timedelta
+        _24h_ago = pd.Timestamp.now(tz="UTC") - timedelta(hours=24)
+        # Ensure first_seen is tz-aware for comparison
+        _fs = pd.to_datetime(darkweb_df["first_seen"], utc=True, errors="coerce")
+        new_24h = int((_fs >= _24h_ago).sum())
+        unique_kw = int(darkweb_df["keyword_matched"].nunique())
+    else:
+        total_mentions = critical_high = new_24h = unique_kw = 0
+
+    with dw1: st.metric("Total Mentions",    f"{total_mentions:,}")
+    with dw2: st.metric("Critical / High",   f"{critical_high:,}")
+    with dw3: st.metric("New (24 h)",        f"{new_24h:,}")
+    with dw4: st.metric("Keywords Watched",  f"{unique_kw:,}" if not darkweb_df.empty else f"{len(_dw_keywords):,}")
+
+    st.divider()
+
+    if darkweb_df.empty:
+        if _dw_enabled:
+            st.info("No dark web mentions found yet — the collector will scan at its next scheduled interval.")
+        st.stop()
+
+    # ── Alert ticker for critical/high ────────────────────────────────────────
+    _alerts = darkweb_df[darkweb_df["severity"].isin(["critical", "high"])].head(5)
+    if not _alerts.empty:
+        st.markdown('<p class="section-label"><i class="bi bi-exclamation-triangle-fill bi-sm icon-error"></i>&nbsp; Active Alerts</p>', unsafe_allow_html=True)
+        for _, row in _alerts.iterrows():
+            sev = str(row.get("severity", "medium"))
+            kw  = str(row.get("keyword_matched", ""))
+            ttl = str(row.get("title", ""))[:120]
+            src = str(row.get("source_name", ""))
+            ts  = row.get("first_seen")
+            ts_str = ts.strftime("%Y-%m-%d %H:%M") if hasattr(ts, "strftime") else "—"
+            badge = f'<span class="badge-{sev}">{sev.upper()}</span>'
+            st.markdown(f"""
+<div class="dw-mention-card {sev}">
+  <div class="dw-title">{badge}&nbsp; {ttl}</div>
+  <div class="dw-meta">
+    <i class="bi bi-broadcast"></i> {src} &nbsp;·&nbsp;
+    <i class="bi bi-key-fill icon-purple"></i> {kw} &nbsp;·&nbsp;
+    <i class="bi bi-clock icon-muted"></i> {ts_str}
+  </div>
+</div>""", unsafe_allow_html=True)
+        st.divider()
+
+    # ── Timeline chart ────────────────────────────────────────────────────────
+    st.markdown('<p class="section-label"><i class="bi bi-graph-up bi-sm icon-purple"></i>&nbsp; Mention Timeline</p>', unsafe_allow_html=True)
+    _timeline_df = darkweb_df.copy()
+    _timeline_df["date"] = pd.to_datetime(_timeline_df["first_seen"], utc=True, errors="coerce").dt.floor("D")
+    _tl = _timeline_df.groupby(["date", "severity"]).size().reset_index(name="count")
+    if not _tl.empty:
+        _sev_colors = {"critical": "#ff4d6d", "high": "#ff8c42", "medium": "#ffd166", "low": "#06d6a0"}
+        fig_tl = px.bar(
+            _tl, x="date", y="count", color="severity",
+            color_discrete_map=_sev_colors,
+            labels={"date": "Date", "count": "Mentions", "severity": "Severity"},
+            barmode="stack",
+        )
+        fig_tl.update_layout(**_PLOTLY_DARK, height=220)
+        fig_tl.update_traces(hovertemplate="%{x|%b %d}: %{y} mentions<extra></extra>")
+        st.plotly_chart(fig_tl, use_container_width=True)
+
+    # ── Severity & keyword breakdown ──────────────────────────────────────────
+    col_sev, col_kw = st.columns(2)
+
+    with col_sev:
+        st.markdown("#### By Severity")
+        sev_counts = darkweb_df["severity"].value_counts().reset_index()
+        sev_counts.columns = ["Severity", "Count"]
+        _sc = {"critical": "#ff4d6d", "high": "#ff8c42", "medium": "#ffd166", "low": "#06d6a0"}
+        fig_sev = px.pie(
+            sev_counts, names="Severity", values="Count", hole=0.55,
+            color="Severity", color_discrete_map=_sc,
+        )
+        fig_sev.update_layout(**_PLOTLY_DARK, height=260, showlegend=True)
+        fig_sev.update_traces(textposition="outside", textinfo="percent+label",
+                              hovertemplate="%{label}: %{value}<extra></extra>")
+        st.plotly_chart(fig_sev, use_container_width=True)
+
+    with col_kw:
+        st.markdown("#### Hits per Keyword")
+        kw_counts = darkweb_df["keyword_matched"].value_counts().reset_index()
+        kw_counts.columns = ["Keyword", "Hits"]
+        fig_kw = px.bar(
+            kw_counts, x="Hits", y="Keyword", orientation="h",
+            color="Hits", color_continuous_scale=[[0, "#2d1458"], [1, "#954ce9"]],
+        )
+        fig_kw.update_coloraxes(showscale=False)
+        fig_kw.update_layout(**_PLOTLY_DARK, height=260)
+        st.plotly_chart(fig_kw, use_container_width=True)
+
+    st.divider()
+
+    # ── Filters ───────────────────────────────────────────────────────────────
+    st.markdown('<p class="section-label"><i class="bi bi-funnel-fill bi-sm icon-purple"></i>&nbsp; Mention Details</p>', unsafe_allow_html=True)
+    _fc1, _fc2, _fc3 = st.columns([2, 2, 2])
+    with _fc1:
+        _sev_filter = st.multiselect(
+            "Severity", ["critical", "high", "medium", "low"],
+            default=["critical", "high", "medium", "low"],
+            key="dw_sev_filter",
+        )
+    with _fc2:
+        _kw_opts = ["All"] + sorted(darkweb_df["keyword_matched"].dropna().unique().tolist())
+        _kw_filter = st.selectbox("Keyword", _kw_opts, key="dw_kw_filter")
+    with _fc3:
+        _src_opts = ["All"] + sorted(darkweb_df["source_name"].dropna().unique().tolist())
+        _src_filter = st.selectbox("Source", _src_opts, key="dw_src_filter")
+
+    _filtered = darkweb_df[darkweb_df["severity"].isin(_sev_filter)]
+    if _kw_filter != "All":
+        _filtered = _filtered[_filtered["keyword_matched"] == _kw_filter]
+    if _src_filter != "All":
+        _filtered = _filtered[_filtered["source_name"] == _src_filter]
+
+    st.caption(f"Showing {len(_filtered):,} of {len(darkweb_df):,} mentions")
+
+    # ── Mention cards ─────────────────────────────────────────────────────────
+    for _, row in _filtered.head(50).iterrows():
+        sev         = str(row.get("severity", "medium"))
+        title_txt   = str(row.get("title", "Untitled"))[:200]
+        source_name = str(row.get("source_name", ""))
+        source_url  = str(row.get("source_url", ""))
+        keyword     = str(row.get("keyword_matched", ""))
+        actor       = str(row.get("actor_handle", "Unknown"))
+        rec_est     = row.get("record_estimate")
+        snippet_txt = str(row.get("snippet", ""))[:300]
+        ai_sum      = str(row.get("ai_summary", ""))
+        dtypes_raw  = row.get("data_types") or []
+        dtypes_list = dtypes_raw if isinstance(dtypes_raw, list) else []
+        ts          = row.get("first_seen")
+        ts_str      = ts.strftime("%Y-%m-%d %H:%M UTC") if hasattr(ts, "strftime") else "—"
+        badge_html  = f'<span class="badge-{sev}">{sev.upper()}</span>'
+        dtype_html  = " ".join(f'<span class="feed-tag">{d}</span>' for d in dtypes_list[:6])
+        rec_html    = f'&nbsp;·&nbsp;<i class="bi bi-database icon-muted"></i> {rec_est}' if rec_est else ""
+
+        with st.expander(f"{sev.upper()[:1].upper()} · {title_txt[:100]}", expanded=False):
+            st.markdown(f"""
+<div>
+  <div style="margin-bottom:8px;">{badge_html} &nbsp; {dtype_html}</div>
+  <div class="dw-meta" style="margin-bottom:6px;">
+    <i class="bi bi-broadcast icon-purple"></i>&nbsp;<strong>{source_name}</strong>
+    &nbsp;·&nbsp;<i class="bi bi-clock icon-muted"></i>&nbsp;{ts_str}
+    {rec_html}
+  </div>
+  {'<div class="dw-actor"><i class="bi bi-person-fill icon-purple"></i>&nbsp;Actor: ' + actor + '</div>' if actor not in ('Unknown', '') else ''}
+  {'<div class="dw-snippet">' + snippet_txt + '</div>' if snippet_txt else ''}
+  {'<div style="margin-top:8px;padding:8px 12px;background:rgba(149,76,233,0.06);border-radius:6px;font-size:0.78rem;color:#9070b0;"><i class="bi bi-cpu icon-purple"></i>&nbsp;<strong>AI Analysis:</strong> ' + ai_sum + '</div>' if ai_sum else ''}
+</div>""", unsafe_allow_html=True)
+            if source_url and (".onion" in source_url or source_url.startswith("http")):
+                st.markdown(
+                    f'<div style="margin-top:8px;"><i class="bi bi-box-arrow-up-right icon-muted"></i>'
+                    f'&nbsp;<a href="{source_url}" target="_blank" style="color:#6040a0;font-size:0.75rem;">'
+                    f'View source (opens in new tab)</a></div>',
+                    unsafe_allow_html=True,
+                )
+
+    if _filtered.empty:
+        st.info("No mentions match the current filters.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -281,6 +281,61 @@ def _process_otx(db: Session, items: list) -> int:
     return saved
 
 
+def _process_darkweb(db: Session, items: list) -> int:
+    """
+    Persist dark web mention metadata.
+    Raw breach content is NEVER stored — only metadata extracted by the feed.
+    Uses fingerprint for deduplication; updates last_seen on revisits.
+    """
+    from models import DarkWebMention
+    from datetime import datetime, timezone
+    from analyzer import analyze
+
+    saved = 0
+    now   = datetime.now(timezone.utc)
+
+    for item in items:
+        fp = item.get("fingerprint", "")
+        if not fp:
+            continue
+
+        existing = db.query(DarkWebMention).filter_by(fingerprint=fp).first()
+        if existing:
+            existing.last_seen = now
+            db.commit()
+            continue
+
+        # AI enrichment — brief summary of what this mention represents
+        text_for_ai = (
+            f"Dark web mention: {item.get('title', '')}. "
+            f"Source: {item.get('source_name', '')}. "
+            f"Snippet: {item.get('snippet', '')}. "
+            f"Keyword matched: {item.get('keyword_matched', '')}."
+        )
+        intel = analyze(text_for_ai) or {}
+
+        db.add(DarkWebMention(
+            source_name     = item.get("source_name", "Unknown")[:200],
+            source_url      = item.get("source_url", "")[:500],
+            keyword_matched = item.get("keyword_matched", "")[:200],
+            title           = item.get("title", "Untitled")[:500],
+            snippet         = item.get("snippet", "")[:2000],
+            actor_handle    = item.get("actor_handle", "Unknown")[:100],
+            record_estimate = item.get("record_estimate", "")[:100] if item.get("record_estimate") else None,
+            data_types      = item.get("data_types", []),
+            severity        = item.get("severity", "medium")[:20],
+            ai_summary      = intel.get("summary", "")[:1000],
+            fingerprint     = fp,
+            first_seen      = now,
+            last_seen       = now,
+        ))
+        saved += 1
+
+    if saved:
+        db.commit()
+    return saved
+
+
 _PROCESSORS = {
     "cisa_kev": _process_cisa_kev,
     "threatfox": _process_threatfox,
@@ -289,6 +344,7 @@ _PROCESSORS = {
     "nvd": _process_nvd,
     "mitre_attack": _process_mitre_attack,
     "otx": _process_otx,
+    "darkweb": _process_darkweb,
 }
 
 

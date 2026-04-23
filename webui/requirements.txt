@@ -7,3 +7,5 @@ anthropic>=0.40.0
 google-genai>=1.0.0
 requests>=2.31.0
 plotly>=5.18.0
+beautifulsoup4==4.12.3
+PySocks==1.7.1
