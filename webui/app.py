@@ -1515,11 +1515,11 @@ with tab_darkweb:
 
     # ── Config banner ─────────────────────────────────────────────────────────
     if not _dw_enabled:
-        st.warning(
-            "**Dark Web Monitor is disabled.** "
-            "Set `DARK_WEB_ENABLED=true` and `DARK_WEB_KEYWORDS=yourdomain.com` "
-            "in your `.env` file, then rebuild the collector: "
-            "`docker compose up -d --build collector`"
+        st.info(
+            "**Dark Web Monitor is not yet enabled.** "
+            "Open the **⚙ Admin** tab (far right of the tab strip above), "
+            "toggle **Enable Dark Web Monitoring**, add your keywords, and click **Save**. "
+            "Changes take effect on the collector's next run — no server restart needed."
         )
     else:
         if _dw_keywords:
