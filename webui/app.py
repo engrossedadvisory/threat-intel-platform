@@ -298,6 +298,130 @@ hr { border: none !important; border-top: 1px solid #0f2040 !important; margin: 
 /* ── Critical glow on metric values ────────────────────────────────────── */
 .metric-glow { color: #ff4d6d !important; text-shadow: 0 0 20px rgba(255,77,109,0.5); }
 
+/* ── Threat ticker ──────────────────────────────────────────────────────── */
+.ticker-wrap {
+    width: 100%; overflow: hidden;
+    background: linear-gradient(90deg, #060c1a 0%, #0a0f1e 50%, #060c1a 100%);
+    border-top: 1px solid #0f2040; border-bottom: 1px solid #0f2040;
+    padding: 5px 0; margin-bottom: 12px;
+}
+.ticker-track {
+    display: inline-flex; white-space: nowrap;
+    animation: ticker-scroll 40s linear infinite;
+}
+.ticker-track:hover { animation-play-state: paused; }
+@keyframes ticker-scroll {
+    0%   { transform: translateX(0); }
+    100% { transform: translateX(-50%); }
+}
+.ticker-item {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 0 28px; font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72rem; color: #3d5a80;
+}
+.ticker-item .ti-type  { color: #38bdf8; font-weight: 700; }
+.ticker-item .ti-val   { color: #7dd3fc; }
+.ticker-item .ti-sep   { color: #1e3a5f; margin: 0 8px; }
+.ticker-item.critical .ti-val { color: #ff4d6d; }
+.ticker-item.high     .ti-val { color: #ff8c42; }
+
+/* ── Threat feed cards ─────────────────────────────────────────────────── */
+.tf-card {
+    background: linear-gradient(145deg, #0c1628 0%, #080e1c 100%);
+    border: 1px solid #142038; border-left: 4px solid #1e4080;
+    border-radius: 10px; padding: 12px 18px; margin-bottom: 4px;
+    display: flex; align-items: center; gap: 14px;
+    transition: border-color .15s, box-shadow .15s;
+    cursor: pointer;
+}
+.tf-card:hover { border-left-color: #38bdf8; box-shadow: 0 4px 24px rgba(56,189,248,0.08); }
+.tf-card.sev-critical { border-left-color: #ff4d6d; }
+.tf-card.sev-high     { border-left-color: #ff8c42; }
+.tf-card.sev-medium   { border-left-color: #ffd166; }
+.tf-card-left  { display:flex; align-items:center; gap:8px; min-width:180px; }
+.tf-card-actor { flex:1; font-weight:600; font-size:0.84rem; color:#c8d8f0; }
+.tf-card-right { display:flex; align-items:center; gap:10px; }
+.tf-conf-bar   { width:60px; height:5px; background:#0f2040; border-radius:3px; overflow:hidden; }
+.tf-conf-fill  { height:100%; background:linear-gradient(90deg,#1e4080,#38bdf8); border-radius:3px; transition:width .3s; }
+.tf-conf-val   { font-family:'JetBrains Mono',monospace; font-size:0.74rem; color:#38bdf8; min-width:32px; }
+.tf-ts         { font-family:'JetBrains Mono',monospace; font-size:0.7rem; color:#3d5a80; }
+
+/* ── Glassmorphism metric cards ─────────────────────────────────────────── */
+div[data-testid="metric-container"] {
+    backdrop-filter: blur(12px) !important;
+    background: linear-gradient(145deg,rgba(14,26,56,0.85),rgba(8,14,28,0.9)) !important;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5), 0 0 0 1px rgba(56,189,248,0.04),
+                inset 0 1px 0 rgba(255,255,255,0.04) !important;
+}
+div[data-testid="metric-container"]:hover {
+    box-shadow: 0 6px 32px rgba(56,189,248,0.12), 0 0 0 1px rgba(56,189,248,0.15),
+                inset 0 1px 0 rgba(255,255,255,0.06) !important;
+    transform: translateY(-1px);
+    transition: all 0.2s ease;
+}
+
+/* ── Critical alert pulse ──────────────────────────────────────────────── */
+.critical-pulse {
+    animation: critical-glow 2s ease-in-out infinite;
+}
+@keyframes critical-glow {
+    0%, 100% { box-shadow: 0 0 8px rgba(255,77,109,0.4), inset 0 0 8px rgba(255,77,109,0.05); }
+    50%       { box-shadow: 0 0 24px rgba(255,77,109,0.7), inset 0 0 12px rgba(255,77,109,0.1); }
+}
+
+/* ── Neon glow on open-alerts metric ───────────────────────────────────── */
+.alert-glow > div > div {
+    color: #ff4d6d !important;
+    text-shadow: 0 0 12px rgba(255,77,109,0.6), 0 0 24px rgba(255,77,109,0.3);
+}
+
+/* ── Chart container styling ────────────────────────────────────────────── */
+div[data-testid="stPlotlyChart"] > div {
+    border-radius: 10px;
+    border: 1px solid #0f2040;
+    overflow: hidden;
+}
+
+/* ── Section label enhancement ─────────────────────────────────────────── */
+.section-label {
+    background: linear-gradient(90deg, rgba(56,189,248,0.06) 0%, transparent 100%);
+    border-left: 3px solid #38bdf8 !important;
+    padding-left: 10px !important;
+    border-radius: 0 4px 4px 0;
+}
+
+/* ── Stat glow card ────────────────────────────────────────────────────── */
+.stat-glow-card {
+    background: linear-gradient(145deg, #0c1628, #080e1c);
+    border: 1px solid #142038; border-radius: 10px;
+    padding: 14px 18px; margin-bottom: 8px;
+    position: relative; overflow: hidden;
+}
+.stat-glow-card::before {
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, #38bdf8, transparent);
+    opacity: 0.5;
+}
+.stat-glow-card .sgc-label {
+    font-size: 0.65rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.12em; color: #3d5a80; margin-bottom: 4px;
+}
+.stat-glow-card .sgc-value {
+    font-size: 1.6rem; font-weight: 800; font-family: 'JetBrains Mono', monospace;
+    color: #38bdf8; line-height: 1;
+    text-shadow: 0 0 20px rgba(56,189,248,0.4);
+}
+.stat-glow-card .sgc-sub {
+    font-size: 0.68rem; color: #3d5a80; margin-top: 3px;
+}
+
+/* ── Risk gauge styling ─────────────────────────────────────────────────── */
+.risk-gauge-wrap {
+    background: linear-gradient(145deg,#0a1020,#060c1a);
+    border: 1px solid #142038; border-radius: 12px;
+    padding: 8px; overflow: hidden;
+}
+
 /* ── Bootstrap Icons sizing ─────────────────────────────────────────────── */
 .bi { line-height: 1; vertical-align: -0.125em; }
 .bi-sm  { font-size: 0.85rem; }
@@ -562,6 +686,96 @@ def load_enrichment_map(ioc_values: tuple) -> dict:
         return {r._mapping["ioc_value"]: dict(r._mapping) for r in rows}
     except Exception:
         return {}
+
+
+@st.cache_data(ttl=120)
+def load_feed_history() -> pd.DataFrame:
+    """Load per-feed daily record counts for sparkline rendering."""
+    engine = get_engine()
+    try:
+        return pd.read_sql(
+            """SELECT source_feed, DATE_TRUNC('day', created_at) AS day, COUNT(*) AS cnt
+               FROM threat_reports
+               WHERE created_at >= NOW() - INTERVAL '7 days'
+               GROUP BY source_feed, day
+               ORDER BY source_feed, day""",
+            engine,
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=3600)
+def geolocate_ips(ip_tuple: tuple) -> pd.DataFrame:
+    """Batch geolocate IPs via ip-api.com (free, no key required, 100/batch limit)."""
+    ips = list(ip_tuple)[:80]
+    if not ips:
+        return pd.DataFrame()
+    try:
+        payload = [{"query": ip, "fields": "query,country,countryCode,lat,lon,isp,org"} for ip in ips]
+        resp = _requests.post("http://ip-api.com/batch", json=payload, timeout=8)
+        resp.raise_for_status()
+        rows = [r for r in resp.json() if r.get("lat")]
+        return pd.DataFrame(rows)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _build_network_graph(reports_df, techniques_df):
+    """Build actor->TTP->industry network traces."""
+    import math
+    node_x, node_y, node_text, node_color, node_size = [], [], [], [], []
+    edge_x, edge_y = [], []
+    positions = {}
+
+    top_actors = (reports_df[reports_df["threat_actor"] != "Unknown"]
+                  .groupby("threat_actor").size().nlargest(5).index.tolist())
+
+    for i, actor in enumerate(top_actors):
+        angle = 2 * math.pi * i / max(len(top_actors), 1)
+        x, y = math.cos(angle) * 2, math.sin(angle) * 2
+        positions[actor] = (x, y)
+        node_x.append(x); node_y.append(y)
+        node_text.append(actor); node_color.append("#ff4d6d"); node_size.append(18)
+
+    for actor in top_actors:
+        actor_rows = reports_df[reports_df["threat_actor"] == actor]
+        ttps = []
+        for _, r in actor_rows.iterrows():
+            raw = r.get("ttps") or []
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except Exception:
+                    raw = []
+            ttps.extend(raw or [])
+        for t in list(set(ttps))[:3]:
+            if t not in positions:
+                angle = len(positions) * 0.9
+                x, y = math.cos(angle) * 4, math.sin(angle) * 4
+                positions[t] = (x, y)
+                node_x.append(x); node_y.append(y)
+                node_text.append(t); node_color.append("#b48ef5"); node_size.append(12)
+            ax, ay = positions[actor]
+            tx, ty = positions[t]
+            edge_x += [ax, tx, None]; edge_y += [ay, ty, None]
+
+    edge_trace = go.Scatter(x=edge_x, y=edge_y, mode="lines",
+                            line=dict(width=1, color="#1e3a5f"), hoverinfo="none")
+    node_trace = go.Scatter(x=node_x, y=node_y, mode="markers+text",
+                            marker=dict(size=node_size, color=node_color,
+                                        line=dict(width=1, color="#050810")),
+                            text=node_text, textposition="top center",
+                            textfont=dict(size=9, color="#c8d8f0"),
+                            hoverinfo="text")
+    fig = go.Figure([edge_trace, node_trace])
+    fig.update_layout(
+        paper_bgcolor="#070b14", plot_bgcolor="#070b14",
+        showlegend=False, margin=dict(l=0, r=0, t=20, b=0), height=300,
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+    )
+    return fig
 
 
 # ─── Admin: platform settings (read/write) ────────────────────────────────────
@@ -939,6 +1153,31 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
+# ─── Live Threat Ticker ───────────────────────────────────────────────────────
+if not iocs.empty:
+    _ticker_iocs = iocs.head(15)
+    _ticker_items = []
+    for _, _ti in _ticker_iocs.iterrows():
+        _ti_type = str(_ti.get("ioc_type", "IOC")).upper()
+        _ti_val = str(_ti.get("value", ""))[:50]
+        _ti_feed = str(_ti.get("source_feed") or _ti.get("feed") or "")
+        _ticker_items.append(
+            f'<span class="ticker-item">'
+            f'<span class="ti-type">[{_ti_type}]</span>'
+            f'<span class="ti-val">{_ti_val}</span>'
+            f'<span class="ti-sep">·</span>'
+            f'<span style="color:#3d5a80;font-size:0.68rem">{_ti_feed}</span>'
+            f'</span>'
+        )
+    _ticker_html_items = "".join(_ticker_items)
+    # Duplicate so the scroll loops seamlessly
+    st.markdown(
+        f'<div class="ticker-wrap"><div class="ticker-track">'
+        f'{_ticker_html_items}{_ticker_html_items}'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
+
 # ─── Top KPI strip ────────────────────────────────────────────────────────────
 k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
 kev_count  = int((cves["is_kev"] == 1).sum()) if not cves.empty and "is_kev" in cves else 0
@@ -980,6 +1219,95 @@ with tab_dash:
     if reports.empty and iocs.empty and cves.empty:
         st.info("Collector is initialising feeds — check back in a few minutes.")
     else:
+        # ── Risk Gauge Row ────────────────────────────────────────────────────
+        _risk_score = min(100, (crit_cves * 8 + kev_count * 5 + len(iocs) // 100 + open_hits * 10))
+        if _risk_score >= 85:
+            _risk_label = "CRITICAL"
+        elif _risk_score >= 60:
+            _risk_label = "HIGH"
+        elif _risk_score >= 30:
+            _risk_label = "MEDIUM"
+        else:
+            _risk_label = "LOW"
+
+        _rg1, _rg2, _rg3 = st.columns(3)
+
+        with _rg1:
+            st.markdown('<div class="risk-gauge-wrap">', unsafe_allow_html=True)
+            _fig_gauge = go.Figure(go.Indicator(
+                mode="gauge+number",
+                value=_risk_score,
+                title={"text": f"Platform Threat Level<br><span style='font-size:0.8rem;color:#ff4d6d'>{_risk_label}</span>", "font": {"size": 13, "color": "#c8d8f0"}},
+                gauge={
+                    "axis": {"range": [0, 100], "tickcolor": "#3d5a80"},
+                    "bar": {"color": "#ff4d6d" if _risk_score >= 85 else ("#ff8c42" if _risk_score >= 60 else ("#ffd166" if _risk_score >= 30 else "#06d6a0"))},
+                    "bgcolor": "#0a1428",
+                    "bordercolor": "#142038",
+                    "steps": [
+                        {"range": [0, 30],  "color": "rgba(6,214,160,0.08)"},
+                        {"range": [30, 60], "color": "rgba(255,209,102,0.08)"},
+                        {"range": [60, 85], "color": "rgba(255,140,66,0.1)"},
+                        {"range": [85, 100],"color": "rgba(255,77,109,0.12)"},
+                    ],
+                    "threshold": {"line": {"color": "#ff4d6d", "width": 2}, "thickness": 0.75, "value": _risk_score},
+                },
+                number={"font": {"color": "#38bdf8", "size": 36}},
+            ))
+            _fig_gauge.update_layout(paper_bgcolor="#060c1a", font_color="#c8d8f0",
+                                     margin=dict(l=20, r=20, t=50, b=10), height=200)
+            st.plotly_chart(_fig_gauge, use_container_width=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with _rg2:
+            # Mini stat glow cards
+            _active_actors = int(reports[reports["threat_actor"] != "Unknown"]["threat_actor"].nunique()) if not reports.empty else 0
+            _malware_fams = int(iocs["malware_family"].dropna().nunique()) if not iocs.empty and "malware_family" in iocs.columns else 0
+            try:
+                _enrich_engine = get_engine()
+                _enrich_count_df = pd.read_sql("SELECT COUNT(*) AS cnt FROM ioc_enrichments", _enrich_engine)
+                _enrich_count = int(_enrich_count_df["cnt"].iloc[0]) if not _enrich_count_df.empty else 0
+            except Exception:
+                _enrich_count = 0
+            st.markdown(f"""
+<div class="stat-glow-card">
+  <div class="sgc-label">Active Threat Actors</div>
+  <div class="sgc-value">{_active_actors}</div>
+  <div class="sgc-sub">distinct non-Unknown actors in reports</div>
+</div>
+<div class="stat-glow-card">
+  <div class="sgc-label">Malware Families</div>
+  <div class="sgc-value">{_malware_fams}</div>
+  <div class="sgc-sub">distinct families across IOCs</div>
+</div>
+<div class="stat-glow-card">
+  <div class="sgc-label">Enriched IOCs</div>
+  <div class="sgc-value">{_enrich_count:,}</div>
+  <div class="sgc-sub">records in ioc_enrichments table</div>
+</div>""", unsafe_allow_html=True)
+
+        with _rg3:
+            st.markdown("#### Top 5 CISA KEV CVEs")
+            if not cves.empty and "is_kev" in cves.columns:
+                _kev_top = cves[cves["is_kev"] == 1].sort_values("cvss_score", ascending=False).head(5)
+                if not _kev_top.empty:
+                    for _, _krow in _kev_top.iterrows():
+                        _k_id = str(_krow.get("cve_id", "?"))
+                        _k_score = _krow.get("cvss_score")
+                        _k_vendor = str(_krow.get("vendor", ""))
+                        _k_badge = _cvss_badge(_k_score)
+                        st.markdown(
+                            f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">'
+                            f'{_k_badge} <span style="font-family:\'JetBrains Mono\',monospace;font-size:0.78rem;color:#7dd3fc">{_k_id}</span>'
+                            f'<span style="font-size:0.72rem;color:#3d5a80">{_k_vendor}</span></div>',
+                            unsafe_allow_html=True,
+                        )
+                else:
+                    st.info("No CISA KEV records yet.")
+            else:
+                st.info("CVE data loading…")
+
+        st.divider()
+
         # ── Row 1: Threat velocity timeline + IOC type donut ─────────────────
         row1_l, row1_r = st.columns([3, 2])
 
@@ -1086,6 +1414,50 @@ with tab_dash:
                 st.info("ATT&CK TTP mapping populates as the AI enrichment runs.")
 
         st.divider()
+
+        # ── World Map IOC Heatmap ─────────────────────────────────────────────
+        st.markdown("#### IOC Geolocation Map")
+        _ip_iocs = iocs[iocs["ioc_type"].str.lower().str.contains("ip", na=False)]["value"].dropna().unique()[:80] if not iocs.empty else []
+        _geo_df = geolocate_ips(tuple(_ip_iocs)) if len(_ip_iocs) > 0 else pd.DataFrame()
+        if not _geo_df.empty:
+            _fig_map = px.scatter_geo(
+                _geo_df,
+                lat="lat", lon="lon",
+                hover_data={"query": True, "country": True, "isp": True, "org": True, "lat": False, "lon": False},
+                scope="world",
+                projection="natural earth",
+            )
+            _fig_map.update_traces(
+                marker=dict(size=8, color="#38bdf8", opacity=0.75),
+            )
+            _fig_map.update_geos(
+                bgcolor="#050810",
+                landcolor="#0a1428",
+                oceancolor="#050810",
+                lakecolor="#050810",
+                coastlinecolor="#1e3a5f",
+                showframe=False,
+                showcoastlines=True,
+            )
+            _fig_map.update_layout(
+                paper_bgcolor="#050810",
+                margin=dict(l=0, r=0, t=0, b=0),
+                height=340,
+                font_color="#c8d8f0",
+            )
+            st.plotly_chart(_fig_map, use_container_width=True)
+        else:
+            st.info("Geolocating IP IOCs — requires internet access from the container.")
+
+        st.divider()
+
+        # ── Actor Relationship Network Graph ──────────────────────────────────
+        if not reports.empty:
+            st.markdown("#### Threat Actor Relationship Network")
+            _net_fig = _build_network_graph(reports, techniques_df)
+            st.plotly_chart(_net_fig, use_container_width=True)
+            st.caption("Red = threat actors · Purple = TTPs. Top 5 actors and their top 3 observed techniques.")
+            st.divider()
 
         # ── Row 3: CVE severity + Watchlist alert trend ───────────────────────
         row3_l, row3_r = st.columns(2)
@@ -1281,8 +1653,34 @@ with tab_feed:
                 try: ttps = json.loads(ttps)
                 except Exception: ttps = []
 
-            label = f"[{ts}]  {actor}  ·  {feed}  ·  Confidence {conf}%"
-            with st.expander(label):
+            if conf >= 90:
+                _sev_cls = "critical"
+            elif conf >= 70:
+                _sev_cls = "high"
+            elif conf >= 40:
+                _sev_cls = "medium"
+            else:
+                _sev_cls = "low"
+
+            _sev_label_txt = _sev_cls.upper()
+            _conf_pct = min(conf, 100)
+
+            # Rich styled card header
+            st.markdown(f"""
+<div class="tf-card sev-{_sev_cls}">
+  <div class="tf-card-left">
+    <span class="badge-{_sev_cls}">{_sev_label_txt}</span>
+    <span class="feed-tag">{feed}</span>
+  </div>
+  <div class="tf-card-actor">{actor}</div>
+  <div class="tf-card-right">
+    <div class="tf-conf-bar"><div class="tf-conf-fill" style="width:{_conf_pct}%"></div></div>
+    <span class="tf-conf-val">{conf}%</span>
+    <span class="tf-ts">{ts}</span>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+            with st.expander("Details", expanded=False):
                 st.markdown(
                     _severity_badge(conf) + f'&nbsp; <span class="feed-tag">{feed}</span>',
                     unsafe_allow_html=True,
@@ -1585,13 +1983,24 @@ with tab_attack:
                                  "Name": row.get("name", tid)})
             hdf = pd.DataFrame(rows)
             if not hdf.empty:
-                fig_h = px.density_heatmap(
-                    hdf, x="Tactic", y="Count", z="Count",
-                    histfunc="sum", color_continuous_scale="Blues",
-                    labels={"Count": "Threat Count"},
+                _nav_pivot = hdf.pivot_table(
+                    index="Technique", columns="Tactic", values="Count",
+                    aggfunc="sum", fill_value=0,
                 )
-                fig_h.update_layout(**_PLOTLY_DARK, height=300)
+                _nav_tactics = sorted(_nav_pivot.columns.tolist())
+                _nav_pivot = _nav_pivot[_nav_tactics]
+                _nav_height = max(300, 30 * len(_nav_pivot))
+                fig_h = go.Figure(go.Heatmap(
+                    z=_nav_pivot.values.tolist(),
+                    x=_nav_tactics,
+                    y=_nav_pivot.index.tolist(),
+                    colorscale=[[0,"#0a1428"],[0.3,"#1e3a6a"],[0.6,"#2563eb"],[0.85,"#7c3aed"],[1,"#dc2626"]],
+                    showscale=True,
+                    hovertemplate="Technique: %{y}<br>Tactic: %{x}<br>Count: %{z}<extra></extra>",
+                ))
+                fig_h.update_layout(**_PLOTLY_DARK, height=_nav_height)
                 st.plotly_chart(fig_h, use_container_width=True)
+                st.caption("Color intensity = observation frequency. Technique IDs link to MITRE ATT&CK.")
 
         # ── Observed techniques ────────────────────────────────────────────────
         st.markdown("#### Observed Techniques")
@@ -2295,6 +2704,8 @@ with tab_health:
         fig_s.update_layout(**_PLOTLY_DARK, height=200, showlegend=False)
         st.plotly_chart(fig_s, use_container_width=True)
 
+        _feed_history_df = load_feed_history()
+
         st.divider()
         for _, row in feed_status.iterrows():
             status   = str(row.get("status", "pending"))
@@ -2314,16 +2725,35 @@ with tab_health:
             err_html = f'<div class="feed-error"><i class="bi bi-exclamation-triangle-fill"></i> {err[:120]}</div>' if err else ""
             _si = {"ok": "check-circle-fill", "error": "x-circle-fill",
                    "running": "arrow-repeat", "pending": "clock"}.get(status, "circle")
-            st.markdown(f"""
+            _fh_col, _spark_col = st.columns([5, 1])
+            with _fh_col:
+                st.markdown(f"""
 <div class="feed-card {status}">
   <i class="bi bi-{_si} status-icon {status}"></i>
-  <div class="feed-name">{str(row['feed_name']).upper()}</div>
+  <div class="feed-name">{str(row["feed_name"]).upper()}</div>
   <div class="feed-meta">
     Last run: {last_run} &nbsp;·&nbsp; Last success: {last_ok}
     {err_html}
   </div>
   <div class="feed-count">+{recent:,} / {total:,}</div>
 </div>""", unsafe_allow_html=True)
+            with _spark_col:
+                _fname = str(row.get("feed_name", ""))
+                if not _feed_history_df.empty and "source_feed" in _feed_history_df.columns:
+                    _spark_data = _feed_history_df[_feed_history_df["source_feed"] == _fname]
+                    if not _spark_data.empty:
+                        _fig_spark = px.line(
+                            _spark_data, x="day", y="cnt",
+                            color_discrete_sequence=["#38bdf8"],
+                        )
+                        _fig_spark.update_layout(
+                            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                            margin=dict(l=0, r=0, t=0, b=0), height=60,
+                            xaxis=dict(visible=False), yaxis=dict(visible=False),
+                            showlegend=False,
+                        )
+                        _fig_spark.update_traces(line=dict(width=1.5))
+                        st.plotly_chart(_fig_spark, use_container_width=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
