@@ -706,74 +706,156 @@ def load_feed_history() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=3600)
-def geolocate_ips(ip_tuple: tuple) -> pd.DataFrame:
-    """Batch geolocate IPs via ip-api.com (free, no key required, 100/batch limit)."""
-    ips = list(ip_tuple)[:80]
-    if not ips:
-        return pd.DataFrame()
-    try:
-        payload = [{"query": ip, "fields": "query,country,countryCode,lat,lon,isp,org"} for ip in ips]
-        resp = _requests.post("http://ip-api.com/batch", json=payload, timeout=8)
-        resp.raise_for_status()
-        rows = [r for r in resp.json() if r.get("lat")]
-        return pd.DataFrame(rows)
-    except Exception:
-        return pd.DataFrame()
+def geolocate_ips(ip_tuple: tuple) -> tuple:
+    """Batch geolocate IPs.  Returns (DataFrame, error_string)."""
+    # filter private ranges
+    public = [ip for ip in ip_tuple
+              if ip and not ip.startswith(("192.168.", "10.", "172.", "127.", "0."))][:80]
+    if not public:
+        return pd.DataFrame(), "No public IP IOCs collected yet."
+    last_err = "unknown error"
+    for url in ["http://ip-api.com/batch"]:
+        try:
+            payload = [{"query": ip, "fields": "query,country,countryCode,lat,lon,isp,org,status"}
+                       for ip in public]
+            resp = _requests.post(url, json=payload, timeout=12,
+                                  headers={"Content-Type": "application/json"})
+            resp.raise_for_status()
+            rows = [r for r in resp.json()
+                    if r.get("status") == "success" and r.get("lat")]
+            if rows:
+                return pd.DataFrame(rows), ""
+            last_err = "All IPs returned non-success status (private ranges or unknown)"
+        except Exception as exc:
+            last_err = str(exc)
+    return pd.DataFrame(), last_err
 
 
-def _build_network_graph(reports_df, techniques_df):
-    """Build actor->TTP->industry network traces."""
+def _build_network_graph(reports_df, iocs_df=None):
+    """Threat relationship network: feeds → actors → TTPs → industries.
+    Always renders — falls back gracefully when enrichment is sparse."""
     import math
-    node_x, node_y, node_text, node_color, node_size = [], [], [], [], []
+
+    node_x, node_y, node_labels, node_colors, node_sizes, node_hover = [], [], [], [], [], []
     edge_x, edge_y = [], []
-    positions = {}
+    positions: dict = {}
 
-    top_actors = (reports_df[reports_df["threat_actor"] != "Unknown"]
-                  .groupby("threat_actor").size().nlargest(5).index.tolist())
+    def _place(key, label, color, size, hover, ring_r, idx, total):
+        if key in positions:
+            return
+        ang = 2 * math.pi * idx / max(total, 1)
+        x, y = math.cos(ang) * ring_r, math.sin(ang) * ring_r
+        positions[key] = (x, y)
+        node_x.append(x); node_y.append(y); node_labels.append(label)
+        node_colors.append(color); node_sizes.append(size); node_hover.append(hover)
 
-    for i, actor in enumerate(top_actors):
-        angle = 2 * math.pi * i / max(len(top_actors), 1)
-        x, y = math.cos(angle) * 2, math.sin(angle) * 2
-        positions[actor] = (x, y)
-        node_x.append(x); node_y.append(y)
-        node_text.append(actor); node_color.append("#ff4d6d"); node_size.append(18)
+    def _edge(a, b):
+        if a in positions and b in positions:
+            ax, ay = positions[a]; bx, by = positions[b]
+            edge_x.extend([ax, bx, None]); edge_y.extend([ay, by, None])
 
-    for actor in top_actors:
-        actor_rows = reports_df[reports_df["threat_actor"] == actor]
-        ttps = []
-        for _, r in actor_rows.iterrows():
-            raw = r.get("ttps") or []
-            if isinstance(raw, str):
-                try:
-                    raw = json.loads(raw)
-                except Exception:
-                    raw = []
-            ttps.extend(raw or [])
-        for t in list(set(ttps))[:3]:
-            if t not in positions:
-                angle = len(positions) * 0.9
-                x, y = math.cos(angle) * 4, math.sin(angle) * 4
-                positions[t] = (x, y)
-                node_x.append(x); node_y.append(y)
-                node_text.append(t); node_color.append("#b48ef5"); node_size.append(12)
-            ax, ay = positions[actor]
-            tx, ty = positions[t]
-            edge_x += [ax, tx, None]; edge_y += [ay, ty, None]
+    # Ring 1 – source feeds (always present, r=2.5)
+    feeds = reports_df["source_feed"].dropna().unique().tolist()
+    for i, f in enumerate(feeds[:8]):
+        _place(f"feed:{f}", f.upper(), "#38bdf8", 14,
+               f"Feed: {f}", 2.5, i, len(feeds[:8]))
 
-    edge_trace = go.Scatter(x=edge_x, y=edge_y, mode="lines",
-                            line=dict(width=1, color="#1e3a5f"), hoverinfo="none")
-    node_trace = go.Scatter(x=node_x, y=node_y, mode="markers+text",
-                            marker=dict(size=node_size, color=node_color,
-                                        line=dict(width=1, color="#050810")),
-                            text=node_text, textposition="top center",
-                            textfont=dict(size=9, color="#c8d8f0"),
-                            hoverinfo="text")
-    fig = go.Figure([edge_trace, node_trace])
+    # Ring 2 – known actors (r=1.0, inner cluster)
+    actor_series = (reports_df[reports_df["threat_actor"].notna()
+                               & (reports_df["threat_actor"] != "Unknown")]
+                    .groupby("threat_actor").size().nlargest(6))
+    for i, (actor, cnt) in enumerate(actor_series.items()):
+        ak = "actor:" + actor
+        _place(ak, actor, "#ff4d6d", 20,
+               f"<b>Actor:</b> {actor}<br>{cnt} reports", 1.0, i, len(actor_series))
+        actor_feeds = reports_df[reports_df["threat_actor"] == actor]["source_feed"].dropna().unique()
+        for feed in actor_feeds[:2]:
+            _edge(ak, f"feed:{feed}")
+
+    # Ring 3 – top TTPs (r=4.5)
+    all_ttps: dict = {}
+    actor_ttp_map: dict = {}
+    for _, r in reports_df.iterrows():
+        raw = r.get("ttps") or []
+        if isinstance(raw, str):
+            try: raw = json.loads(raw)
+            except Exception: raw = []
+        actor = str(r.get("threat_actor") or "Unknown")
+        for t in (raw or []):
+            all_ttps[t] = all_ttps.get(t, 0) + 1
+            actor_ttp_map.setdefault(actor, set()).add(t)
+    top_ttps = sorted(all_ttps.items(), key=lambda kv: -kv[1])[:10]
+    for i, (ttp, cnt) in enumerate(top_ttps):
+        tk = "ttp:" + ttp
+        _place(tk, ttp, "#b48ef5", 11,
+               f"<b>TTP:</b> {ttp}<br>{cnt} reports", 4.5, i, len(top_ttps))
+        # connect to actors that use this TTP
+        for actor, actor_ttps in actor_ttp_map.items():
+            if ttp in actor_ttps and "actor:" + actor in positions:
+                _edge(tk, "actor:" + actor)
+                break
+        # connect to feed if no actor matched
+        if not any(positions.get("actor:" + a) for a in actor_ttp_map if ttp in actor_ttp_map[a]):
+            if feeds:
+                _edge(tk, f"feed:{feeds[0]}")
+
+    # Ring 4 – target industries (r=6.5)
+    ind_series = (reports_df[reports_df["target_industry"].notna()
+                              & (reports_df["target_industry"] != "Unknown")]
+                  .groupby("target_industry").size().nlargest(5))
+    for i, (ind, cnt) in enumerate(ind_series.items()):
+        ik = "ind:" + ind
+        _place(ik, ind[:18], "#06d6a0", 10,
+               f"<b>Industry:</b> {ind}<br>{cnt} reports", 6.5, i, len(ind_series))
+        ind_actors = reports_df[reports_df["target_industry"] == ind]["threat_actor"].dropna().unique()
+        for a in ind_actors[:1]:
+            _edge(ik, "actor:" + a)
+        if ik not in [k for k in positions if positions[k]]:
+            pass  # already placed
+
+    # Fallback annotation when there is truly nothing
+    if not node_x:
+        fig = go.Figure()
+        fig.add_annotation(text="Relationship data populates as AI enrichment runs",
+                           xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
+                           font=dict(color="#3d5a80", size=13))
+        fig.update_layout(paper_bgcolor="#070b14", plot_bgcolor="#070b14", height=300,
+                          margin=dict(l=0, r=0, t=0, b=0),
+                          xaxis=dict(visible=False), yaxis=dict(visible=False))
+        return fig
+
+    legend_items = [
+        ("●", "#38bdf8", "Feeds"),
+        ("●", "#ff4d6d", "Actors"),
+        ("●", "#b48ef5", "TTPs"),
+        ("●", "#06d6a0", "Industries"),
+    ]
+    annotations = [
+        dict(x=0.02 + j * 0.18, y=1.04, xref="paper", yref="paper",
+             text=f'<span style="color:{c};font-size:14px">{sym}</span> '
+                  f'<span style="color:#6e7fa3;font-size:11px">{lbl}</span>',
+             showarrow=False, align="left")
+        for j, (sym, c, lbl) in enumerate(legend_items)
+    ]
+
+    fig = go.Figure([
+        go.Scatter(x=edge_x, y=edge_y, mode="lines",
+                   line=dict(width=0.8, color="rgba(56,189,248,0.15)"),
+                   hoverinfo="none"),
+        go.Scatter(x=node_x, y=node_y, mode="markers+text",
+                   marker=dict(size=node_sizes, color=node_colors,
+                               line=dict(width=1.5, color="#050810"), opacity=0.92),
+                   text=node_labels, textposition="top center",
+                   textfont=dict(size=8, color="#c8d8f0"),
+                   hovertext=node_hover, hoverinfo="text"),
+    ])
     fig.update_layout(
         paper_bgcolor="#070b14", plot_bgcolor="#070b14",
-        showlegend=False, margin=dict(l=0, r=0, t=20, b=0), height=300,
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        showlegend=False, height=380,
+        margin=dict(l=10, r=10, t=30, b=10),
+        annotations=annotations,
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-9, 9]),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-9, 9]),
     )
     return fig
 
@@ -1345,10 +1427,25 @@ with tab_dash:
                                     legend=dict(orientation="h", y=-0.25))
                 fig2.update_traces(textposition="inside", textinfo="percent",
                                    hovertemplate="<b>%{label}</b><br>%{value:,} IOCs (%{percent})<extra></extra>")
-                # Drill-down hint
-                st.plotly_chart(fig2, use_container_width=True)
-                _top_ioc_type = by_type.sort_values("count", ascending=False).iloc[0]["ioc_type"] if not by_type.empty else ""
-                st.caption(f"Largest category: **{_top_ioc_type}** — click ⊙ IOC Hunt to filter")
+                fig2.update_layout(clickmode="event+select")
+                _ioc_sel = st.plotly_chart(fig2, on_select="rerun",
+                                           use_container_width=True, key="dash_ioc_pie")
+                _drill_ioc_type = None
+                if _ioc_sel and _ioc_sel.selection and _ioc_sel.selection.points:
+                    _drill_ioc_type = _ioc_sel.selection.points[0].get("label")
+                if _drill_ioc_type:
+                    _ioc_drill_df = iocs[iocs["ioc_type"] == _drill_ioc_type]
+                    st.markdown(
+                        f'<div class="section-label" style="margin-top:8px;">'
+                        f'<i class="bi bi-funnel-fill"></i>&nbsp; '
+                        f'{len(_ioc_drill_df):,} <b>{_drill_ioc_type}</b> IOCs</div>',
+                        unsafe_allow_html=True)
+                    _show_cols = [c for c in ["value", "malware_family", "tags"] if c in _ioc_drill_df.columns]
+                    st.dataframe(_ioc_drill_df[_show_cols].head(20),
+                                 use_container_width=True, hide_index=True)
+                else:
+                    _top_ioc_type = by_type.sort_values("count", ascending=False).iloc[0]["ioc_type"] if not by_type.empty else ""
+                    st.caption(f"Click a slice to drill into IOCs · Largest: **{_top_ioc_type}**")
             else:
                 st.info("No IOC data yet.")
 
@@ -1376,12 +1473,41 @@ with tab_dash:
                         custom_data=["Avg_Conf"],
                     )
                     fig_a.update_coloraxes(showscale=False)
-                    fig_a.update_layout(**_PLOTLY_DARK, height=320)
+                    fig_a.update_layout(**_PLOTLY_DARK, height=320, clickmode="event+select")
                     fig_a.update_traces(
                         hovertemplate="<b>%{y}</b><br>%{x} reports · Avg conf: %{customdata[0]:.0f}%<extra></extra>"
                     )
-                    st.plotly_chart(fig_a, use_container_width=True)
-                    st.caption("Click ⬡ Actors tab for full profiles with TTPs, CVEs, and IOC attribution")
+                    _actor_sel = st.plotly_chart(fig_a, on_select="rerun",
+                                                 use_container_width=True, key="dash_actor_bar")
+                    _drill_actor = None
+                    if _actor_sel and _actor_sel.selection and _actor_sel.selection.points:
+                        _drill_actor = _actor_sel.selection.points[0].get("y")
+                    if _drill_actor:
+                        _adrill = reports[reports["threat_actor"] == _drill_actor]
+                        _adrill_iocs = iocs[iocs["report_id"].isin(_adrill["id"])] if not iocs.empty else pd.DataFrame()
+                        st.markdown(
+                            f'<div class="section-label"><i class="bi bi-person-badge-fill"></i>'
+                            f'&nbsp; Actor drill-down: <b>{_drill_actor}</b> — '
+                            f'{len(_adrill)} reports · {len(_adrill_iocs)} IOCs</div>',
+                            unsafe_allow_html=True)
+                        _ad1, _ad2 = st.columns(2)
+                        with _ad1:
+                            st.markdown("**Recent reports**")
+                            for _, _ar in _adrill.head(5).iterrows():
+                                _ar_ts = _ar["created_at"].strftime("%Y-%m-%d") if hasattr(_ar["created_at"], "strftime") else "?"
+                                st.markdown(
+                                    f'<span class="feed-tag">{str(_ar.get("source_feed","")).upper()}</span> '
+                                    f'{_severity_badge(int(_ar.get("confidence_score") or 0))} '
+                                    f'<span style="color:#9aabb8;font-size:0.8rem">{str(_ar.get("summary",""))[:120]}</span> '
+                                    f'<span style="color:#3d5a80;font-size:0.72rem">{_ar_ts}</span>',
+                                    unsafe_allow_html=True)
+                        with _ad2:
+                            if not _adrill_iocs.empty:
+                                st.markdown("**Attributed IOCs**")
+                                _ioc_cols = [c for c in ["ioc_type","value","malware_family"] if c in _adrill_iocs.columns]
+                                st.dataframe(_adrill_iocs[_ioc_cols].head(10), use_container_width=True, hide_index=True)
+                    else:
+                        st.caption("Click a bar to drill into that actor's reports and IOCs")
                 else:
                     st.info("Actor data populates as AI enrichment runs.")
             else:
@@ -1406,10 +1532,34 @@ with tab_dash:
                     color_continuous_scale=[[0,"#2d1060"],[0.5,"#7c3aed"],[1,"#c084fc"]],
                 )
                 fig4.update_coloraxes(showscale=False)
-                fig4.update_layout(**_PLOTLY_DARK, height=320)
+                fig4.update_layout(**_PLOTLY_DARK, height=320, clickmode="event+select")
                 fig4.update_traces(hovertemplate="<b>%{y}</b>: %{x} observations<extra></extra>")
-                st.plotly_chart(fig4, use_container_width=True)
-                st.caption("Click ⬢ ATT&CK tab for technique-level detail with mitigations")
+                _tac_sel = st.plotly_chart(fig4, on_select="rerun",
+                                           use_container_width=True, key="dash_tac_bar")
+                _drill_tactic = None
+                if _tac_sel and _tac_sel.selection and _tac_sel.selection.points:
+                    _drill_tactic = _tac_sel.selection.points[0].get("y")
+                if _drill_tactic and not techniques_df.empty:
+                    _tac_techs = techniques_df[
+                        techniques_df["tactic"].str.contains(_drill_tactic, na=False, case=False)
+                    ].copy()
+                    _tac_techs["observations"] = _tac_techs["technique_id"].map(
+                        lambda t: ttp_usage.get(t, {}).get("count", 0) if isinstance(ttp_usage.get(t), dict) else ttp_usage.get(t, 0)
+                    )
+                    _tac_techs = _tac_techs[_tac_techs["observations"] > 0].sort_values("observations", ascending=False)
+                    st.markdown(
+                        f'<div class="section-label"><i class="bi bi-diagram-3-fill icon-purple"></i>'
+                        f'&nbsp; Tactic: <b>{_drill_tactic}</b> — {len(_tac_techs)} observed techniques</div>',
+                        unsafe_allow_html=True)
+                    for _, _tt in _tac_techs.head(8).iterrows():
+                        st.markdown(
+                            f'<span class="ttp-tag">{_tt["technique_id"]}</span> '
+                            f'<b style="color:#c8d8f0">{_tt["name"]}</b> '
+                            f'<span style="color:#38bdf8;font-family:monospace;font-size:0.78rem">'
+                            f'{int(_tt["observations"])}× observed</span>',
+                            unsafe_allow_html=True)
+                else:
+                    st.caption("Click a bar to see techniques within that tactic")
             else:
                 st.info("ATT&CK TTP mapping populates as the AI enrichment runs.")
 
@@ -1417,44 +1567,68 @@ with tab_dash:
 
         # ── World Map IOC Heatmap ─────────────────────────────────────────────
         st.markdown("#### IOC Geolocation Map")
-        _ip_iocs = iocs[iocs["ioc_type"].str.lower().str.contains("ip", na=False)]["value"].dropna().unique()[:80] if not iocs.empty else []
-        _geo_df = geolocate_ips(tuple(_ip_iocs)) if len(_ip_iocs) > 0 else pd.DataFrame()
+        _ip_iocs = tuple(
+            iocs[iocs["ioc_type"].str.lower().str.contains("ip", na=False)]["value"]
+            .dropna().unique()[:80]
+        ) if not iocs.empty else ()
+        _geo_df, _geo_err = geolocate_ips(_ip_iocs) if _ip_iocs else (pd.DataFrame(), "No IP IOCs collected yet.")
         if not _geo_df.empty:
+            # Country frequency for bubble sizing
+            _country_cnt = _geo_df["countryCode"].value_counts().to_dict()
+            _geo_df["count"] = _geo_df["countryCode"].map(_country_cnt).fillna(1)
             _fig_map = px.scatter_geo(
                 _geo_df,
-                lat="lat", lon="lon",
-                hover_data={"query": True, "country": True, "isp": True, "org": True, "lat": False, "lon": False},
-                scope="world",
+                lat="lat", lon="lon", size="count",
+                hover_name="country",
+                hover_data={"query": True, "isp": True, "org": True,
+                            "lat": False, "lon": False, "count": False, "countryCode": False},
                 projection="natural earth",
+                size_max=30,
             )
-            _fig_map.update_traces(
-                marker=dict(size=8, color="#38bdf8", opacity=0.75),
-            )
+            _fig_map.update_traces(marker=dict(color="#38bdf8", opacity=0.80,
+                                               line=dict(width=0.5, color="#0a1428")))
             _fig_map.update_geos(
-                bgcolor="#050810",
-                landcolor="#0a1428",
-                oceancolor="#050810",
-                lakecolor="#050810",
-                coastlinecolor="#1e3a5f",
-                showframe=False,
-                showcoastlines=True,
+                bgcolor="#050810", landcolor="#0d1a30", oceancolor="#050810",
+                lakecolor="#050810", coastlinecolor="#1e3a5f",
+                showframe=False, showcoastlines=True, showland=True,
+                showcountries=True, countrycolor="#0f2040",
             )
             _fig_map.update_layout(
-                paper_bgcolor="#050810",
-                margin=dict(l=0, r=0, t=0, b=0),
-                height=340,
-                font_color="#c8d8f0",
+                paper_bgcolor="#050810", margin=dict(l=0, r=0, t=0, b=0),
+                height=360, font_color="#c8d8f0",
             )
             st.plotly_chart(_fig_map, use_container_width=True)
+            # Country breakdown
+            _top_countries = _geo_df["country"].value_counts().head(5)
+            _cc_parts = [f"**{c}** {n}" for c, n in _top_countries.items()]
+            st.caption("Top origins: " + " · ".join(_cc_parts))
         else:
-            st.info("Geolocating IP IOCs — requires internet access from the container.")
+            # Offline fallback: country bar from available CVE data
+            st.markdown(
+                f'<div style="background:rgba(56,189,248,0.04);border:1px solid #0f2040;'
+                f'border-radius:8px;padding:10px 14px;font-size:0.78rem;color:#3d5a80;">'
+                f'<i class="bi bi-globe2"></i>&nbsp; Geo lookup unavailable: {_geo_err}<br>'
+                f'<span style="font-size:0.7rem;">Map will populate once IP IOCs are collected '
+                f'and the container can reach ip-api.com.</span></div>',
+                unsafe_allow_html=True,
+            )
+            # Show IOC count breakdown as fallback visual
+            if not iocs.empty:
+                _ioc_src = iocs.groupby("ioc_type").size().reset_index(name="count")
+                _fig_fall = px.bar(_ioc_src, x="ioc_type", y="count",
+                                   color="count",
+                                   color_continuous_scale=[[0,"#1a3a6a"],[1,"#38bdf8"]],
+                                   labels={"ioc_type": "IOC Type", "count": "Count"})
+                _fig_fall.update_coloraxes(showscale=False)
+                _fig_fall.update_layout(**_PLOTLY_DARK, height=220, showlegend=False)
+                st.plotly_chart(_fig_fall, use_container_width=True)
 
         st.divider()
 
         # ── Actor Relationship Network Graph ──────────────────────────────────
         if not reports.empty:
             st.markdown("#### Threat Actor Relationship Network")
-            _net_fig = _build_network_graph(reports, techniques_df)
+            _net_fig = _build_network_graph(reports, iocs)
             st.plotly_chart(_net_fig, use_container_width=True)
             st.caption("Red = threat actors · Purple = TTPs. Top 5 actors and their top 3 observed techniques.")
             st.divider()
@@ -1484,11 +1658,27 @@ with tab_dash:
                     color="Severity", color_discrete_map=_sev_colors,
                     category_orders={"Severity":["Critical","High","Medium","Low","Unknown"]},
                 )
-                fig5.update_layout(**_PLOTLY_DARK, showlegend=False, height=260)
+                fig5.update_layout(**_PLOTLY_DARK, showlegend=False, height=260, clickmode="event+select")
                 fig5.update_traces(hovertemplate="<b>%{x}</b>: %{y:,} CVEs<extra></extra>")
-                st.plotly_chart(fig5, use_container_width=True)
-                _kev_pct = f"{(kev_count/len(cves)*100):.1f}%" if len(cves) > 0 else "—"
-                st.caption(f"{kev_count:,} CISA KEV ({_kev_pct}) · Click ◆ CVE Tracker for filters and full list")
+                _cve_sel = st.plotly_chart(fig5, on_select="rerun",
+                                           use_container_width=True, key="dash_cve_bar")
+                _drill_sev = None
+                if _cve_sel and _cve_sel.selection and _cve_sel.selection.points:
+                    _drill_sev = _cve_sel.selection.points[0].get("x")
+                if _drill_sev:
+                    _cve_filtered = cves_copy[cves_copy["Severity"] == _drill_sev].sort_values("cvss_score", ascending=False)
+                    st.markdown(
+                        f'<div class="section-label"><i class="bi bi-bug-fill icon-error"></i>'
+                        f'&nbsp; {_drill_sev} CVEs ({len(_cve_filtered):,})</div>',
+                        unsafe_allow_html=True)
+                    _cve_show_cols = [c for c in ["cve_id","cvss_score","vendor","product","cisa_due_date","is_kev"] if c in _cve_filtered.columns]
+                    st.dataframe(_cve_filtered[_cve_show_cols].head(15),
+                                 use_container_width=True, hide_index=True,
+                                 column_config={"is_kev": st.column_config.CheckboxColumn("KEV"),
+                                                "cvss_score": st.column_config.NumberColumn("CVSS", format="%.1f")})
+                else:
+                    _kev_pct = f"{(kev_count/len(cves)*100):.1f}%" if len(cves) > 0 else "—"
+                    st.caption(f"Click a bar to see CVEs of that severity · {kev_count:,} CISA KEV ({_kev_pct})")
             else:
                 st.info("CVE data loading…")
 
@@ -1998,9 +2188,40 @@ with tab_attack:
                     showscale=True,
                     hovertemplate="Technique: %{y}<br>Tactic: %{x}<br>Count: %{z}<extra></extra>",
                 ))
-                fig_h.update_layout(**_PLOTLY_DARK, height=_nav_height)
-                st.plotly_chart(fig_h, use_container_width=True)
-                st.caption("Color intensity = observation frequency. Technique IDs link to MITRE ATT&CK.")
+                fig_h.update_layout(**_PLOTLY_DARK, height=_nav_height, clickmode="event+select")
+                _nav_sel = st.plotly_chart(fig_h, on_select="rerun",
+                                           use_container_width=True, key="attack_nav_grid")
+                _drill_tid = None
+                if _nav_sel and _nav_sel.selection and _nav_sel.selection.points:
+                    _drill_tid = _nav_sel.selection.points[0].get("y")
+                if _drill_tid and not techniques_df.empty:
+                    _dt = techniques_df[techniques_df["technique_id"] == _drill_tid]
+                    if not _dt.empty:
+                        _dt_row = _dt.iloc[0]
+                        _dt_cnt = ttp_usage.get(_drill_tid, {}).get("count", 0) if isinstance(ttp_usage.get(_drill_tid), dict) else ttp_usage.get(_drill_tid, 0)
+                        st.markdown(
+                            f'<div class="section-label"><i class="bi bi-bullseye icon-purple"></i>'
+                            f'&nbsp; <b>{_drill_tid}</b> — {_dt_row["name"]} '
+                            f'<span style="color:#38bdf8">({_dt_cnt}× observed)</span></div>',
+                            unsafe_allow_html=True)
+                        _nav_c1, _nav_c2 = st.columns([2, 3])
+                        with _nav_c1:
+                            st.markdown(f"**Tactic(s):** {_dt_row.get('tactic','?')}")
+                            _desc = str(_dt_row.get("description") or "")
+                            st.markdown(_desc[:400] + ("…" if len(_desc) > 400 else ""))
+                            st.markdown(f"[↗ MITRE ATT&CK](https://attack.mitre.org/techniques/{_drill_tid.replace('.','/') })")
+                        with _nav_c2:
+                            if not mitigations_df.empty:
+                                _mits = mitigations_df[mitigations_df["technique_id"] == _drill_tid]
+                                if not _mits.empty:
+                                    st.markdown(f"**{len(_mits)} Mitigation(s):**")
+                                    for _, _m in _mits.head(5).iterrows():
+                                        st.markdown(
+                                            f'<span class="ttp-tag">{_m["mitigation_id"]}</span> '
+                                            f'<b style="color:#c8d8f0">{_m["name"]}</b>',
+                                            unsafe_allow_html=True)
+                else:
+                    st.caption("Click any cell to see technique details and mitigations · Color = observation frequency")
 
         # ── Observed techniques ────────────────────────────────────────────────
         st.markdown("#### Observed Techniques")
