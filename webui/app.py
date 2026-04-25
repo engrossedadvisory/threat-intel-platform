@@ -1521,7 +1521,7 @@ if not iocs.empty:
         )
 
         # ── AI synopsis ───────────────────────────────────────────────────────
-        with st.spinner("🤖 Generating AI threat synopsis…"):
+        with st.spinner("Generating AI threat synopsis…"):
             _synopsis = ai_ioc_synopsis(
                 ioc_type       = _sel_type,
                 ioc_value      = _sel_val,
@@ -1573,7 +1573,7 @@ st.divider()
     "◈  Dashboard",    "⊛  Threat Advisor",  "◉  Threat Feed",
     "⬡  Actors",       "⊙  IOC Hunt",         "◆  CVE Tracker",
     "⬢  ATT&CK",       "⊕  AI Analyst",        "◉  Dark Web",
-    "⚑  Watchlist",   "🔔  Alerts",            "🎯  Campaigns",
+    "⚑  Watchlist",   "⊜  Alerts",            "⬦  Campaigns",
     "◎  Feed Health",  "⚙  Admin",
 ])
 
@@ -2434,7 +2434,7 @@ with tab_iocs:
 
         # ── URL Intelligence Panel ────────────────────────────────────────────
         if _total_url > 0 or _total_dom > 0:
-            st.markdown("#### 🌐 URL & Domain Intelligence")
+            st.markdown('<p class="section-label"><i class="bi bi-globe2 bi-sm icon-accent"></i>&nbsp; URL &amp; Domain Intelligence</p>', unsafe_allow_html=True)
             _ui_col1, _ui_col2 = st.columns(2)
 
             # ── Left: Top hosting domains from URL IOCs ───────────────────────
@@ -2544,7 +2544,7 @@ with tab_iocs:
 
             # ── URL status breakdown + recent malicious URLs ──────────────────
             if not _url_iocs.empty:
-                with st.expander(f"📋  Recent Malicious URLs  ({min(_total_url, 50)} shown)", expanded=False):
+                with st.expander(f"◉  Recent Malicious URLs  ({min(_total_url, 50)} shown)", expanded=False):
                     _url_display = _url_iocs[["value", "malware_family"]].head(50).copy()
                     _url_display.columns = ["URL", "Malware Family"]
                     # Linkify URLs in a custom HTML table
@@ -2579,7 +2579,7 @@ with tab_iocs:
             )
             _hunt_ips = extract_ips_from_iocs(_ioc_rows_for_geo)
             if _hunt_ips:
-                with st.expander(f"🗺️  IP Geolocation  ({len(_hunt_ips)} unique IPs from all IOC types)", expanded=False):
+                with st.expander(f"◉  IP Geolocation  ({len(_hunt_ips)} unique IPs from all IOC types)", expanded=False):
                     _hgeo_df, _hgeo_err = geolocate_ips(_hunt_ips)
                     if not _hgeo_df.empty:
                         _hcc = _hgeo_df["countryCode"].value_counts().to_dict()
@@ -3022,7 +3022,7 @@ with tab_analyst:
                 st.rerun()
 
     # ── Sigma rule quick-generate ─────────────────────────────────────────────
-    with st.expander("⚡  Quick-generate Sigma detection rules", expanded=False):
+    with st.expander("◆  Quick-generate Sigma detection rules", expanded=False):
         st.markdown(
             '<span style="font-size:0.78rem;color:#5a7fa8;">Generate YAML Sigma rules from your top observed TTPs — '
             'ready to import into Splunk, Elastic, or any Sigma-compatible SIEM.</span>',
@@ -3599,7 +3599,7 @@ with tab_advisor:
         st.markdown("**⚙ Setup Checklist** — complete these steps to activate the Threat Advisor")
 
         def _chk(ok: bool, label: str, fix: str = ""):
-            icon  = "✅" if ok else "⬜"
+            icon  = '<i class="bi bi-check-circle-fill icon-ok" style="font-size:0.9rem"></i>' if ok else '<i class="bi bi-circle" style="font-size:0.9rem;color:#ffd166"></i>'
             color = "#06d6a0" if ok else "#ffd166"
             note  = (
                 ' <span style="font-size:0.72rem;color:#3d5a80">— ' + fix + "</span>"
@@ -3818,9 +3818,9 @@ with tab_advisor:
             )
 
             _type_icon = {
-                "domain": "🌐", "ip": "🖥️", "cidr": "🔗",
-                "email_domain": "📧", "keyword": "🔑",
-            }.get(_atype, "📌")
+                "domain": '<i class="bi bi-globe2 icon-accent"></i>', "ip": '<i class="bi bi-hdd-network icon-accent"></i>', "cidr": '<i class="bi bi-diagram-2 icon-accent"></i>',
+                "email_domain": '<i class="bi bi-envelope-fill icon-accent"></i>', "keyword": '<i class="bi bi-key-fill icon-purple"></i>',
+            }.get(_atype, '<i class="bi bi-pin-fill icon-accent"></i>')
 
             _expander_label = (
                 _type_icon + "  " + _aval +
@@ -3865,7 +3865,7 @@ with tab_advisor:
                         _act_str = ", ".join(str(a) for a in _actors[:4])
                         st.markdown(
                             '<div style="font-size:0.75rem;color:#ff8c42;margin-bottom:4px">'
-                            '⚠ Actors: <b>' + _act_str + '</b></div>',
+                            '<i class="bi bi-exclamation-triangle-fill icon-error" style="font-size:0.75rem"></i>&nbsp;Actors: <b>' + _act_str + '</b></div>',
                             unsafe_allow_html=True,
                         )
                     if _miocs:
@@ -3894,7 +3894,7 @@ with tab_advisor:
                             '<div style="background:rgba(255,77,109,0.12);border:1px solid #ff4d6d;'
                             'border-radius:4px;padding:5px 10px;font-size:0.78rem;'
                             'color:#ff8080;margin:3px 0">'
-                            '🚨 ' + str(_ia) + '</div>',
+                            '<i class="bi bi-exclamation-octagon-fill icon-error"></i>&nbsp;' + str(_ia) + '</div>',
                             unsafe_allow_html=True,
                         )
 
@@ -3958,7 +3958,7 @@ with tab_advisor:
         _bf1, _bf2 = st.columns(2)
 
         with _bf1:
-            st.markdown("**🔍 Key Findings**")
+            st.markdown('<p style="font-size:0.85rem;font-weight:700;color:#c8d8f0"><i class="bi bi-search icon-accent"></i>&nbsp; Key Findings</p>', unsafe_allow_html=True)
             if _br_findings:
                 for _idx, _f in enumerate(_br_findings, 1):
                     st.markdown(
@@ -3971,7 +3971,7 @@ with tab_advisor:
                 st.caption("Analysis pending — no AI backend configured or no data yet.")
 
         with _bf2:
-            st.markdown("**🛡 Defensive Recommendations**")
+            st.markdown('<p style="font-size:0.85rem;font-weight:700;color:#c8d8f0"><i class="bi bi-shield-check icon-ok"></i>&nbsp; Defensive Recommendations</p>', unsafe_allow_html=True)
             if _br_recs:
                 for _rec in _br_recs[:5]:
                     st.markdown(
@@ -3980,7 +3980,7 @@ with tab_advisor:
                         unsafe_allow_html=True,
                     )
             if _br_actors:
-                st.markdown("**⚡ Trending Threat Actors**")
+                st.markdown('<p style="font-size:0.85rem;font-weight:700;color:#c8d8f0"><i class="bi bi-person-badge-fill icon-error"></i>&nbsp; Trending Threat Actors</p>', unsafe_allow_html=True)
                 _actor_html = " &nbsp; ".join(
                     '<span class="badge-critical">' + str(a) + '</span>'
                     for a in _br_actors[:6]
@@ -4070,7 +4070,7 @@ with tab_advisor:
                 else:
                     st.markdown(
                         '<div class="metric-card" style="text-align:center;padding:30px">'
-                        '<div style="font-size:2.5rem">👤</div>'
+                        '<div><i class="bi bi-person-circle" style="font-size:2.5rem;color:#c084fc"></i></div>'
                         '<div style="font-size:0.8rem;color:#3d5a80;margin-top:8px">'
                         'Click an actor bar to see their IOCs, TTPs, and campaign history'
                         '</div></div>',
@@ -4255,7 +4255,7 @@ with tab_advisor:
                     + str(_mrow["description"])[:220] + ('…' if len(str(_mrow["description"])) > 220 else '') +
                     '</div>'
                     + (
-                        '<div style="font-size:0.7rem;color:#ff8c42;margin-top:3px">⚡ ' + _mactor_str + '</div>'
+                        '<div style="font-size:0.7rem;color:#ff8c42;margin-top:3px"><i class="bi bi-lightning-fill icon-error" style="font-size:0.7rem"></i>&nbsp;' + _mactor_str + '</div>'
                         if _mactor_str else ''
                     ) +
                     '</div>',
@@ -4333,7 +4333,7 @@ with tab_advisor:
                 else:
                     st.markdown(
                         '<div class="metric-card" style="text-align:center;padding:24px">'
-                        '<div style="font-size:2rem">🔗</div>'
+                        '<div><i class="bi bi-share-fill" style="font-size:2rem;color:#38bdf8"></i></div>'
                         '<div style="font-size:0.8rem;color:#3d5a80;margin-top:8px">'
                         'Click a bar to see which feeds corroborate the actor and matched IOCs'
                         '</div></div>',
@@ -4415,7 +4415,7 @@ with tab_advisor:
                         st.markdown(
                             '<div style="background:rgba(192,132,252,0.06);border:1px solid #7c3aed33;'
                             'border-radius:8px;padding:12px 16px">'
-                            '<div style="font-size:0.7rem;color:#6e7fa3;margin-bottom:6px">🤖 AI Assessment (cached)</div>'
+                            '<div style="font-size:0.7rem;color:#6e7fa3;margin-bottom:6px"><i class="bi bi-cpu-fill" style="color:#38bdf8"></i>&nbsp;AI Assessment (cached)</div>'
                             '<div style="font-size:0.82rem;color:#8aa0c0;line-height:1.6">'
                             + _cached_profile[:800] + ('…' if len(_cached_profile) > 800 else '') +
                             '</div></div>',
@@ -4436,7 +4436,7 @@ with tab_advisor:
                         st.markdown(
                             '<div style="background:rgba(192,132,252,0.06);border:1px solid #7c3aed33;'
                             'border-radius:8px;padding:12px 16px">'
-                            '<div style="font-size:0.7rem;color:#6e7fa3;margin-bottom:6px">📊 Intelligence Summary</div>'
+                            '<div style="font-size:0.7rem;color:#6e7fa3;margin-bottom:6px"><i class="bi bi-bar-chart-fill" style="color:#38bdf8"></i>&nbsp;Intelligence Summary</div>'
                             + (
                                 '<div style="font-size:0.78rem;color:#8aa0c0;margin-bottom:4px">'
                                 '<b style="color:#c084fc">Malware families:</b> ' + ", ".join(_ap_malware) + '</div>'
@@ -4448,7 +4448,7 @@ with tab_advisor:
                                 if _ap_countries else ''
                             )
                             + '<div style="font-size:0.78rem;color:#6e7fa3;margin-top:8px">'
-                            '💡 Add assets to the Watchlist and click <b>Research Now</b> to generate '
+                            '<i class="bi bi-lightbulb-fill" style="color:#ffd166"></i>&nbsp;Add assets to the Watchlist and click <b>Research Now</b> to generate '
                             'a full AI-written profile with attribution, impact assessment, and '
                             'sector-specific mitigations for this actor.'
                             '</div>'
@@ -4602,7 +4602,7 @@ with tab_admin:
 
         save_col, status_col = st.columns([1, 3])
         with save_col:
-            if st.button("💾  Save Dark Web Settings", key="adm_dw_save", type="primary"):
+            if st.button("◈  Save Dark Web Settings", key="adm_dw_save", type="primary"):
                 new_keywords = ",".join(
                     k.strip() for k in dw_keywords_input.splitlines() if k.strip()
                 )
@@ -4715,7 +4715,7 @@ with tab_admin:
 
         _enr_save_col, _enr_status_col = st.columns([1, 3])
         with _enr_save_col:
-            if st.button("💾  Save Enrichment Keys", key="adm_enr_save", type="primary"):
+            if st.button("◈  Save Enrichment Keys", key="adm_enr_save", type="primary"):
                 ok2 = save_platform_settings({
                     "enrichment_vt_key":     _vt_key.strip(),
                     "enrichment_gn_key":     _gn_key.strip(),
@@ -4778,7 +4778,7 @@ with tab_admin:
 
         _alc_save_col, _alc_status_col = st.columns([1, 3])
         with _alc_save_col:
-            if st.button("💾  Save Alert Channels", key="adm_alc_save", type="primary"):
+            if st.button("◈  Save Alert Channels", key="adm_alc_save", type="primary"):
                 ok3 = save_platform_settings({
                     "alert_slack_webhook": _slack_wh.strip(),
                     "alert_teams_webhook": _teams_wh.strip(),
@@ -4873,7 +4873,7 @@ with tab_admin:
             _new_key_perms = st.selectbox("Permissions", ["read", "read,taxii", "read,write", "admin"], key="adm_new_key_perms")
         with _nk_c3:
             st.markdown("<br>", unsafe_allow_html=True)
-            _gen_key_btn = st.button("🔑  Generate Key", key="adm_gen_key", use_container_width=True, type="primary")
+            _gen_key_btn = st.button("⊞  Generate Key", key="adm_gen_key", use_container_width=True, type="primary")
 
         if _gen_key_btn and _new_key_name.strip():
             import secrets as _secrets
