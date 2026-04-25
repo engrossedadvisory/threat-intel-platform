@@ -1360,28 +1360,141 @@ st.markdown(f"""
 
 # ─── Live Threat Ticker ───────────────────────────────────────────────────────
 if not iocs.empty:
-    _ticker_iocs = iocs.head(15)
+    _ticker_iocs = iocs.head(20)
     _ticker_items = []
     for _, _ti in _ticker_iocs.iterrows():
         _ti_type = str(_ti.get("ioc_type", "IOC")).upper()
-        _ti_val = str(_ti.get("value", ""))[:50]
+        _ti_val  = str(_ti.get("value", ""))[:50]
         _ti_feed = str(_ti.get("source_feed") or _ti.get("feed") or "")
+        _ti_fam  = str(_ti.get("malware_family") or "")
+        _sev_cls = "critical" if _ti_fam else "high"
         _ticker_items.append(
-            f'<span class="ticker-item">'
+            f'<span class="ticker-item {_sev_cls}">'
             f'<span class="ti-type">[{_ti_type}]</span>'
             f'<span class="ti-val">{_ti_val}</span>'
             f'<span class="ti-sep">·</span>'
             f'<span style="color:#3d5a80;font-size:0.68rem">{_ti_feed}</span>'
+            + (f'<span class="ti-sep">·</span><span style="color:#c084fc;font-size:0.68rem">{_ti_fam}</span>' if _ti_fam else '') +
             f'</span>'
         )
     _ticker_html_items = "".join(_ticker_items)
-    # Duplicate so the scroll loops seamlessly
+    # Decorative scrolling ticker — hover to pause
     st.markdown(
         f'<div class="ticker-wrap"><div class="ticker-track">'
         f'{_ticker_html_items}{_ticker_html_items}'
         f'</div></div>',
         unsafe_allow_html=True,
     )
+
+    # ── Interactive drill-down row ────────────────────────────────────────────
+    _drill_cols_all = ["ioc_type", "value", "malware_family", "tags"]
+    _drill_cols = [c for c in _drill_cols_all if c in _ticker_iocs.columns]
+    _drill_display = _ticker_iocs[_drill_cols].copy()
+    if "tags" in _drill_display.columns:
+        _drill_display["tags"] = _drill_display["tags"].apply(
+            lambda t: ", ".join(t[:3]) if isinstance(t, list) else str(t or "")
+        )
+    _drill_display = _drill_display.rename(columns={
+        "ioc_type": "Type", "value": "IOC Value",
+        "malware_family": "Malware / Family", "tags": "Tags",
+    })
+
+    _ticker_sel = st.dataframe(
+        _drill_display,
+        use_container_width=True,
+        hide_index=True,
+        height=130,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="ticker_drill",
+        column_config={
+            "Type":              st.column_config.TextColumn(width="small"),
+            "IOC Value":         st.column_config.TextColumn(width="large"),
+            "Malware / Family":  st.column_config.TextColumn(width="medium"),
+            "Tags":              st.column_config.TextColumn(width="medium"),
+        },
+    )
+
+    # ── Drill-down panel (appears below table on row click) ───────────────────
+    _ticker_sel_rows = (
+        _ticker_sel.selection.rows
+        if _ticker_sel and hasattr(_ticker_sel, "selection")
+        else []
+    )
+    if _ticker_sel_rows:
+        _sel_idx  = _ticker_sel_rows[0]
+        _sel_ioc  = _ticker_iocs.iloc[_sel_idx]
+        _sel_val  = str(_sel_ioc.get("value", ""))
+        _sel_type = str(_sel_ioc.get("ioc_type", ""))
+        _sel_fam  = str(_sel_ioc.get("malware_family") or "Unknown")
+        _sel_feed = str(_sel_ioc.get("source_feed") or _sel_ioc.get("feed") or "")
+        _sel_tags = _sel_ioc.get("tags") or []
+        if isinstance(_sel_tags, str):
+            try: _sel_tags = json.loads(_sel_tags)
+            except Exception: _sel_tags = []
+
+        # Fetch parent report for summary
+        _sel_report_summary = ""
+        _sel_report_actor   = ""
+        _sel_report_ttps    = []
+        if not reports.empty and "id" in _ticker_iocs.columns:
+            _sel_rid = _sel_ioc.get("report_id")
+            if _sel_rid:
+                _sel_rpt = reports[reports["id"] == _sel_rid]
+                if not _sel_rpt.empty:
+                    _sel_report_summary = str(_sel_rpt.iloc[0].get("summary") or "")
+                    _sel_report_actor   = str(_sel_rpt.iloc[0].get("threat_actor") or "")
+                    _sel_ttps_raw = _sel_rpt.iloc[0].get("ttps") or []
+                    if isinstance(_sel_ttps_raw, list):
+                        _sel_report_ttps = _sel_ttps_raw[:6]
+
+        _sev_color = "#ff4d6d" if _sel_fam and _sel_fam != "Unknown" else "#ffd166"
+        st.markdown(
+            '<div style="background:rgba(6,214,160,0.04);border:1px solid #06d6a022;'
+            'border-left:4px solid ' + _sev_color + ';border-radius:6px;'
+            'padding:10px 16px;margin:4px 0 8px 0">'
+            '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">'
+            '<div>'
+            '<div style="font-size:0.7rem;color:#3d5a80;text-transform:uppercase;letter-spacing:0.08em">Type</div>'
+            '<div style="font-size:0.85rem;color:#38bdf8;font-weight:700">' + _sel_type.upper() + '</div>'
+            '</div>'
+            '<div style="flex:1;min-width:200px">'
+            '<div style="font-size:0.7rem;color:#3d5a80;text-transform:uppercase;letter-spacing:0.08em">IOC Value</div>'
+            '<div style="font-size:0.82rem;color:#c8d8f0;font-family:monospace;word-break:break-all">' + _sel_val + '</div>'
+            '</div>'
+            '<div>'
+            '<div style="font-size:0.7rem;color:#3d5a80;text-transform:uppercase;letter-spacing:0.08em">Malware Family</div>'
+            '<div style="font-size:0.82rem;color:#c084fc;font-weight:600">' + _sel_fam + '</div>'
+            '</div>'
+            '<div>'
+            '<div style="font-size:0.7rem;color:#3d5a80;text-transform:uppercase;letter-spacing:0.08em">Source Feed</div>'
+            '<div style="font-size:0.82rem;color:#6e7fa3">' + _sel_feed + '</div>'
+            '</div>'
+            + (
+                '<div><div style="font-size:0.7rem;color:#3d5a80;text-transform:uppercase;letter-spacing:0.08em">Tags</div>'
+                '<div style="font-size:0.78rem;color:#6e7fa3">' + ', '.join(str(t) for t in _sel_tags[:5]) + '</div></div>'
+                if _sel_tags else ''
+            )
+            + (
+                '<div style="flex:2;min-width:250px"><div style="font-size:0.7rem;color:#3d5a80;text-transform:uppercase;letter-spacing:0.08em">Actor</div>'
+                '<div style="font-size:0.82rem;color:#ff8c42">' + _sel_report_actor + '</div></div>'
+                if _sel_report_actor and _sel_report_actor != "Unknown" else ''
+            )
+            + '</div>'
+            + (
+                '<div style="font-size:0.78rem;color:#8aa0c0;margin-top:6px;line-height:1.5;border-top:1px solid #1e3a5f;padding-top:6px">'
+                + _sel_report_summary + '</div>'
+                if _sel_report_summary else ''
+            )
+            + (
+                '<div style="margin-top:6px">'
+                + ' '.join('<span class="ttp-tag">' + t + '</span>' for t in _sel_report_ttps)
+                + '</div>'
+                if _sel_report_ttps else ''
+            )
+            + '</div>',
+            unsafe_allow_html=True,
+        )
 
 # ─── Top KPI strip ────────────────────────────────────────────────────────────
 k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
@@ -1407,7 +1520,7 @@ st.divider()
  tab_cves, tab_attack, tab_analyst, tab_darkweb,
  tab_watchlist, tab_alerts, tab_campaigns,
  tab_health, tab_admin) = st.tabs([
-    "◈  Dashboard",    "🧠  Threat Advisor",  "◉  Threat Feed",
+    "◈  Dashboard",    "⊛  Threat Advisor",  "◉  Threat Feed",
     "⬡  Actors",       "⊙  IOC Hunt",         "◆  CVE Tracker",
     "⬢  ATT&CK",       "⊕  AI Analyst",        "◉  Dark Web",
     "⚑  Watchlist",   "🔔  Alerts",            "🎯  Campaigns",
