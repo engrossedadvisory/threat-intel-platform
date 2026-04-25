@@ -3407,8 +3407,8 @@ with tab_campaigns:
 with tab_advisor:
     st.markdown(
         '<p class="section-label">'
-        '<i class="bi bi-robot bi-sm icon-accent"></i>'
-        '&nbsp; AI Threat Advisor — Proactive Asset Intelligence</p>',
+        '<i class="bi bi-cpu-fill bi-sm icon-accent"></i>'
+        '&nbsp; AI Threat Advisor &mdash; Proactive Asset Intelligence</p>',
         unsafe_allow_html=True,
     )
 
@@ -3612,7 +3612,7 @@ with tab_advisor:
     st.divider()
 
     # ── Asset risk profile cards ──────────────────────────────────────────────
-    st.markdown("#### 🎯 Asset Threat Profiles")
+    st.markdown('<p class="section-label"><i class="bi bi-crosshair bi-sm icon-accent"></i>&nbsp; Asset Threat Profiles</p>', unsafe_allow_html=True)
 
     if _profiles_df.empty:
         st.info(
@@ -3755,7 +3755,7 @@ with tab_advisor:
     st.divider()
 
     # ── Daily Briefing Panel ──────────────────────────────────────────────────
-    st.markdown("#### 📋 Latest Intelligence Briefing")
+    st.markdown('<p class="section-label"><i class="bi bi-newspaper bi-sm icon-accent"></i>&nbsp; Latest Intelligence Briefing</p>', unsafe_allow_html=True)
 
     if _briefing_df.empty:
         st.info("First briefing will be generated within the hour, or click **Research Now** above.")
@@ -3827,7 +3827,7 @@ with tab_advisor:
     st.divider()
 
     # ── Threat Actor Intelligence ─────────────────────────────────────────────
-    st.markdown("#### 👤 Threat Actor Intelligence")
+    st.markdown('<p class="section-label"><i class="bi bi-person-badge-fill bi-sm icon-error"></i>&nbsp; Threat Actor Intelligence</p>', unsafe_allow_html=True)
     if not reports.empty and "threat_actor" in reports.columns:
         _ta_df = (
             reports[reports["threat_actor"].notna() & (reports["threat_actor"] != "Unknown")]
@@ -3921,7 +3921,7 @@ with tab_advisor:
     st.divider()
 
     # ── Kill Chain Phase Distribution ─────────────────────────────────────────
-    st.markdown("#### ⛓ Kill Chain Phase Distribution")
+    st.markdown('<p class="section-label"><i class="bi bi-diagram-3-fill bi-sm icon-purple"></i>&nbsp; Kill Chain Phase Distribution</p>', unsafe_allow_html=True)
     _kc_map = {
         "T1595": "Reconnaissance", "T1592": "Reconnaissance", "T1589": "Reconnaissance",
         "T1598": "Weaponisation", "T1587": "Weaponisation", "T1588": "Weaponisation",
@@ -3973,7 +3973,7 @@ with tab_advisor:
     st.divider()
 
     # ── MITRE ATT&CK Mitigation Playbook ─────────────────────────────────────
-    st.markdown("#### 🛡 MITRE ATT&CK Mitigation Playbook")
+    st.markdown('<p class="section-label"><i class="bi bi-shield-check bi-sm icon-ok"></i>&nbsp; MITRE ATT&amp;CK Mitigation Playbook</p>', unsafe_allow_html=True)
     st.markdown(
         '<p style="font-size:0.8rem;color:#6e7fa3">Defensive controls mapped to '
         'TTPs observed across all active threat reports. '
@@ -4102,7 +4102,7 @@ with tab_advisor:
     st.divider()
 
     # ── Cross-Feed Threat Correlation ─────────────────────────────────────────
-    st.markdown("#### 🔗 Cross-Feed Threat Correlation")
+    st.markdown('<p class="section-label"><i class="bi bi-share-fill bi-sm icon-accent"></i>&nbsp; Cross-Feed Threat Correlation</p>', unsafe_allow_html=True)
     st.markdown(
         '<p style="font-size:0.8rem;color:#6e7fa3">Threat actors and malware families '
         'observed across multiple independent feeds — highest-confidence signals.</p>',
@@ -4188,7 +4188,7 @@ with tab_advisor:
     st.divider()
 
     # ── AI-Generated Threat Actor Profiles ───────────────────────────────────
-    st.markdown("#### 🤖 AI-Generated Threat Actor Profiles")
+    st.markdown('<p class="section-label"><i class="bi bi-cpu-fill bi-sm icon-accent"></i>&nbsp; AI-Generated Threat Actor Profiles</p>', unsafe_allow_html=True)
     st.markdown(
         '<p style="font-size:0.8rem;color:#6e7fa3">On-demand AI profiles for the most '
         'active actors seen in your feeds. Includes attribution, TTPs, and sector targeting.</p>',
