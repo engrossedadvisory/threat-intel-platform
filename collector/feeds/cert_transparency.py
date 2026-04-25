@@ -133,6 +133,9 @@ class CertTransparencyFeed(BaseFeed):
             if not_before_str:
                 try:
                     nb = datetime.fromisoformat(not_before_str.replace("Z", "+00:00"))
+                    # Ensure offset-aware for comparison (assume UTC if no tz)
+                    if nb.tzinfo is None:
+                        nb = nb.replace(tzinfo=timezone.utc)
                     if nb < cutoff:
                         continue
                 except ValueError:
