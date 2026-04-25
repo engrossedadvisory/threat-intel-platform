@@ -308,7 +308,7 @@ hr { border: none !important; border-top: 1px solid #0f2040 !important; margin: 
 }
 .ticker-track {
     display: inline-flex; white-space: nowrap;
-    animation: ticker-scroll 40s linear infinite;
+    animation: ticker-scroll 90s linear infinite;
 }
 .ticker-track:hover { animation-play-state: paused; }
 @keyframes ticker-scroll {
@@ -1423,6 +1423,20 @@ if not iocs.empty:
         "malware_family": "Malware / Family", "tags": "Tags",
     })
 
+    # ── Row header: label + clear button ─────────────────────────────────────
+    _tbl_col1, _tbl_col2 = st.columns([6, 1])
+    with _tbl_col1:
+        st.markdown(
+            '<p style="font-size:0.72rem;color:#3d5a80;text-transform:uppercase;'
+            'letter-spacing:0.08em;margin:0 0 2px 0">'
+            '<i class="bi bi-table"></i>&nbsp; Click a row to drill down</p>',
+            unsafe_allow_html=True,
+        )
+    with _tbl_col2:
+        if st.button("⟳ Clear", key="clear_ticker_sel", help="Clear selected IOC"):
+            st.session_state["ticker_drill_ver"] = st.session_state.get("ticker_drill_ver", 0) + 1
+            st.rerun()
+
     _ticker_sel = st.dataframe(
         _drill_display,
         use_container_width=True,
@@ -1430,7 +1444,7 @@ if not iocs.empty:
         height=130,
         on_select="rerun",
         selection_mode="single-row",
-        key="ticker_drill",
+        key=f"ticker_drill_{st.session_state.get('ticker_drill_ver', 0)}",
         column_config={
             "Type":              st.column_config.TextColumn(width="small"),
             "IOC Value":         st.column_config.TextColumn(width="large"),
