@@ -207,3 +207,81 @@ def analyze(text: str) -> Optional[dict]:
         if result and isinstance(result.get("confidence_score"), int):
             return result
     return None
+
+
+def ai_query(prompt: str) -> Optional[dict]:
+    """Free-form AI query for threat research.  Returns parsed JSON dict or None.
+    Uses same backend priority chain as analyze(): Ollama → LM Studio → Claude → Gemini.
+    The caller is responsible for embedding JSON schema instructions in the prompt.
+    """
+    def _try_ollama():
+        if not _ollama_reachable():
+            return None
+        for model in LOCAL_MODELS:
+            try:
+                resp = requests.post(
+                    f"{OLLAMA_URL}/api/generate",
+                    json={"model": model, "prompt": prompt[:8000],
+                          "stream": False, "format": "json"},
+                    timeout=120,
+                )
+                resp.raise_for_status()
+                result = _parse(resp.json().get("response", ""))
+                if result is not None:
+                    return result
+            except Exception as exc:
+                log.debug(f"[ai_query] Ollama/{model} failed: {exc}")
+        return None
+
+    def _try_lmstudio():
+        if not LMSTUDIO_URL or not _lmstudio_reachable():
+            return None
+        try:
+            resp = requests.post(
+                f"{LMSTUDIO_URL}/v1/chat/completions",
+                json={"model": LMSTUDIO_MODEL,
+                      "messages": [{"role": "user", "content": prompt[:8000]}],
+                      "temperature": 0.2, "max_tokens": 2048},
+                timeout=120,
+            )
+            resp.raise_for_status()
+            return _parse(resp.json()["choices"][0]["message"]["content"])
+        except Exception as exc:
+            log.debug(f"[ai_query] LM Studio failed: {exc}")
+            return None
+
+    def _try_claude():
+        if not CLAUDE_API_KEY:
+            return None
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+            msg = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=2048,
+                messages=[{"role": "user", "content": prompt[:12000]}],
+            )
+            return _parse(msg.content[0].text)
+        except Exception as exc:
+            log.warning(f"[ai_query] Claude failed: {exc}")
+            return None
+
+    def _try_gemini():
+        if not GEMINI_API_KEY:
+            return None
+        try:
+            from google import genai
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            result_obj = client.models.generate_content(
+                model="gemini-2.0-flash", contents=prompt[:12000]
+            )
+            return _parse(result_obj.text)
+        except Exception as exc:
+            log.warning(f"[ai_query] Gemini failed: {exc}")
+            return None
+
+    for fn in (_try_ollama, _try_lmstudio, _try_claude, _try_gemini):
+        result = fn()
+        if result is not None:
+            return result
+    return None

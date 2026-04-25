@@ -9,6 +9,7 @@ from enrichment import enrich_batch
 from alerter import process_pending_alerts
 from watchlist_checker import check_all_new_iocs
 from decay import apply_decay
+from threat_researcher import run_research_cycle
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -837,6 +838,12 @@ def main():
                 apply_decay(db)
             except Exception as e:
                 log.debug(f"[decay] skipped: {e}")
+
+            # AI threat research — assess watched assets against current intel
+            try:
+                run_research_cycle(db)
+            except Exception as e:
+                log.debug(f"[researcher] skipped: {e}")
         finally:
             db.close()
         time.sleep(30)

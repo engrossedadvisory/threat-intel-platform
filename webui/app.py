@@ -2,6 +2,7 @@ import json
 import os
 import re
 import requests as _requests
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -964,6 +965,46 @@ def load_platform_settings() -> dict[str, str]:
     return settings
 
 
+@st.cache_data(ttl=60)
+def load_threat_advisor_data() -> tuple:
+    """Load latest briefing and all asset threat profiles."""
+    try:
+        from sqlalchemy import text as _sa_text
+        with engine.connect() as _conn:
+            # Latest briefing
+            briefing_df = pd.read_sql(
+                "SELECT * FROM threat_briefings ORDER BY generated_at DESC LIMIT 1",
+                _conn,
+            )
+            # All asset profiles joined with watched assets
+            profiles_df = pd.read_sql(
+                """SELECT atp.*, wa.value AS asset_value, wa.asset_type,
+                          wa.label AS asset_label
+                   FROM asset_threat_profiles atp
+                   JOIN watched_assets wa ON atp.watched_asset_id = wa.id
+                   WHERE wa.active = true
+                   ORDER BY atp.risk_score DESC""",
+                _conn,
+            )
+        return briefing_df, profiles_df
+    except Exception:
+        return pd.DataFrame(), pd.DataFrame()
+
+
+@st.cache_data(ttl=30)
+def load_org_risk_score() -> int:
+    """Compute overall org risk as the max asset risk score (0-100)."""
+    try:
+        with engine.connect() as _conn:
+            row = pd.read_sql(
+                "SELECT COALESCE(MAX(risk_score), 0) AS max_risk FROM asset_threat_profiles",
+                _conn,
+            )
+            return int(row.iloc[0]["max_risk"]) if not row.empty else 0
+    except Exception:
+        return 0
+
+
 def save_platform_settings(updates: dict[str, str]) -> bool:
     """Upsert settings into the DB and bust the cache so the next read is fresh."""
     engine = get_engine()
@@ -1241,6 +1282,8 @@ techniques_df, mitigations_df = load_attack_data()
 darkweb_df = load_darkweb_data()
 watchlist_df, hits_df = load_watchlist_data()
 campaigns_df = load_campaigns_data()
+_briefing_df, _profiles_df = load_threat_advisor_data()
+_org_risk = load_org_risk_score()
 
 # ─── Platform header ──────────────────────────────────────────────────────────
 _now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -1344,11 +1387,12 @@ st.divider()
 (tab_dash, tab_feed, tab_actors, tab_iocs,
  tab_cves, tab_attack, tab_analyst, tab_darkweb,
  tab_watchlist, tab_alerts, tab_campaigns,
- tab_health, tab_admin) = st.tabs([
+ tab_advisor, tab_health, tab_admin) = st.tabs([
     "◈  Dashboard",    "◉  Threat Feed",  "⬡  Actors",
     "⊙  IOC Hunt",     "◆  CVE Tracker",  "⬢  ATT&CK",
     "⊕  AI Analyst",   "◉  Dark Web",
     "⚑  Watchlist",   "🔔  Alerts",       "🎯  Campaigns",
+    "🧠  Threat Advisor",
     "◎  Feed Health",  "⚙  Admin",
 ])
 
@@ -3337,6 +3381,486 @@ with tab_campaigns:
   </div>
   {'<div class="campaign-desc">' + _cdesc[:300] + ('…' if len(_cdesc) > 300 else '') + '</div>' if _cdesc else ''}
 </div>""", unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# THREAT ADVISOR
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_advisor:
+    st.markdown(
+        '<p class="section-label">'
+        '<i class="bi bi-robot bi-sm icon-accent"></i>'
+        '&nbsp; AI Threat Advisor — Proactive Asset Intelligence</p>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Refresh button ────────────────────────────────────────────────────────
+    _adv_col_btn, _adv_col_info = st.columns([1, 4])
+    with _adv_col_btn:
+        if st.button("⟳  Research Now", key="adv_refresh", type="primary"):
+            load_threat_advisor_data.clear()
+            load_org_risk_score.clear()
+            st.rerun()
+    with _adv_col_info:
+        st.markdown(
+            '<span style="font-size:0.8rem;color:#3d5a80">'
+            'The AI agent automatically assesses each watched asset against live threat intel '
+            'every hour. Click <b>Research Now</b> to trigger an immediate analysis.</span>',
+            unsafe_allow_html=True,
+        )
+
+    st.divider()
+
+    # ── Org-wide risk gauge row ───────────────────────────────────────────────
+    _adv_r1, _adv_r2, _adv_r3, _adv_r4 = st.columns(4)
+
+    _risk_color_map = {
+        "critical": "#ff4d6d", "high": "#ff8c42",
+        "medium": "#ffd166", "low": "#06d6a0",
+    }
+
+    def _risk_level_from_score(s: int) -> str:
+        if s >= 75: return "critical"
+        if s >= 50: return "high"
+        if s >= 25: return "medium"
+        return "low"
+
+    _org_risk_level = _risk_level_from_score(_org_risk)
+    _org_risk_color = _risk_color_map.get(_org_risk_level, "#38bdf8")
+
+    with _adv_r1:
+        _fig_gauge = go.Figure(go.Indicator(
+            mode="gauge+number",
+            value=_org_risk,
+            title={"text": "Org Risk Score", "font": {"color": "#8aa0c0", "size": 13}},
+            number={"font": {"color": _org_risk_color, "size": 32}},
+            gauge={
+                "axis": {"range": [0, 100], "tickcolor": "#1e3a5f"},
+                "bar": {"color": _org_risk_color, "thickness": 0.3},
+                "bgcolor": "#050810",
+                "bordercolor": "#1e3a5f",
+                "steps": [
+                    {"range": [0, 25],  "color": "#051520"},
+                    {"range": [25, 50], "color": "#0a2030"},
+                    {"range": [50, 75], "color": "#1a1505"},
+                    {"range": [75, 100], "color": "#1f0508"},
+                ],
+                "threshold": {"line": {"color": _org_risk_color, "width": 3},
+                              "thickness": 0.8, "value": _org_risk},
+            },
+        ))
+        _fig_gauge.update_layout(
+            paper_bgcolor="#050810", font_color="#c8d8f0",
+            height=200, margin=dict(l=20, r=20, t=30, b=10),
+        )
+        st.plotly_chart(_fig_gauge, use_container_width=True)
+
+    _at_risk_count = len(_profiles_df[_profiles_df["risk_score"] >= 25]) if not _profiles_df.empty else 0
+    _crit_count    = len(_profiles_df[_profiles_df["risk_level"] == "critical"]) if not _profiles_df.empty else 0
+    _total_assets  = len(_profiles_df) if not _profiles_df.empty else 0
+    _briefing_time = ""
+    if not _briefing_df.empty and "generated_at" in _briefing_df.columns:
+        try:
+            _bt = pd.to_datetime(_briefing_df.iloc[0]["generated_at"], utc=True)
+            _briefing_time = _bt.strftime("%Y-%m-%d %H:%M UTC")
+        except Exception:
+            pass
+
+    with _adv_r2:
+        st.markdown(
+            '<div class="metric-card">'
+            '<div style="font-size:0.75rem;color:#6e7fa3">Assets at Risk</div>'
+            '<div style="font-size:2rem;font-weight:700;color:#ff8c42">'
+            + str(_at_risk_count) +
+            '</div>'
+            '<div style="font-size:0.7rem;color:#3d5a80">of ' + str(_total_assets) + ' monitored</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+    with _adv_r3:
+        _crit_color = "#ff4d6d" if _crit_count > 0 else "#06d6a0"
+        st.markdown(
+            '<div class="metric-card">'
+            '<div style="font-size:0.75rem;color:#6e7fa3">Critical Alerts</div>'
+            '<div style="font-size:2rem;font-weight:700;color:' + _crit_color + '">'
+            + str(_crit_count) +
+            '</div>'
+            '<div style="font-size:0.7rem;color:#3d5a80">require immediate action</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+    with _adv_r4:
+        st.markdown(
+            '<div class="metric-card">'
+            '<div style="font-size:0.75rem;color:#6e7fa3">Last Briefing</div>'
+            '<div style="font-size:0.9rem;font-weight:600;color:#38bdf8;padding-top:6px">'
+            + (_briefing_time or "Pending…") +
+            '</div>'
+            '<div style="font-size:0.7rem;color:#3d5a80">auto-generated daily</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.divider()
+
+    # ── Asset risk profile cards ──────────────────────────────────────────────
+    st.markdown("#### 🎯 Asset Threat Profiles")
+
+    if _profiles_df.empty:
+        st.info(
+            "No threat profiles yet — the AI research agent runs every hour. "
+            "Add assets in **⚑ Watchlist** and click **Research Now** above."
+        )
+    else:
+        # Sort: critical first
+        _severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        _profiles_sorted = _profiles_df.copy()
+        _profiles_sorted["_sev_ord"] = _profiles_sorted["risk_level"].map(
+            lambda x: _severity_order.get(str(x).lower(), 4)
+        )
+        _profiles_sorted = _profiles_sorted.sort_values(["_sev_ord", "risk_score"], ascending=[True, False])
+
+        for _, _prof in _profiles_sorted.iterrows():
+            _rl    = str(_prof.get("risk_level", "low")).lower()
+            _rs    = int(_prof.get("risk_score", 0) or 0)
+            _aval  = str(_prof.get("asset_value", ""))
+            _atype = str(_prof.get("asset_type", ""))
+            _albl  = str(_prof.get("asset_label", "") or "")
+            _ai_txt = str(_prof.get("ai_assessment", "") or "")
+            _recs   = _prof.get("recommendations") or []
+            _iacts  = _prof.get("immediate_actions") or []
+            _actors = _prof.get("matched_actors") or []
+            _miocs  = _prof.get("matched_iocs") or []
+            _ttps   = _prof.get("attack_vectors") or []
+            _last   = str(_prof.get("last_assessed", "") or "")[:16]
+
+            _rc = _risk_color_map.get(_rl, "#38bdf8")
+            _rgb_str = (
+                "255,77,109" if _rl == "critical" else
+                "255,140,66" if _rl == "high" else
+                "255,209,102" if _rl == "medium" else
+                "6,214,160"
+            )
+            _border_style = (
+                "border-left:4px solid " + _rc + ";"
+                "background:rgba(" + _rgb_str + ",0.04);"
+            )
+
+            _type_icon = {
+                "domain": "🌐", "ip": "🖥️", "cidr": "🔗",
+                "email_domain": "📧", "keyword": "🔑",
+            }.get(_atype, "📌")
+
+            _expander_label = (
+                _type_icon + "  " + _aval +
+                ("  ·  " + _albl if _albl else "") +
+                "   【" + _rl.upper() + " — " + str(_rs) + "/100】"
+            )
+
+            with st.expander(
+                label=_expander_label,
+                expanded=(_rl in ("critical", "high")),
+            ):
+                st.markdown(
+                    '<div style="' + _border_style + 'border-radius:6px;padding:10px 14px;margin-bottom:8px">',
+                    unsafe_allow_html=True,
+                )
+
+                _pc1, _pc2 = st.columns([3, 2])
+                with _pc1:
+                    # Risk bar
+                    _fig_mini = go.Figure(go.Bar(
+                        x=[_rs], y=["Risk"], orientation="h",
+                        marker_color=_rc, showlegend=False,
+                    ))
+                    _fig_mini.update_xaxes(range=[0, 100], showgrid=False, showticklabels=True)
+                    _fig_mini.update_yaxes(showticklabels=False)
+                    _fig_mini.update_layout(
+                        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                        height=55, margin=dict(l=0, r=0, t=5, b=5),
+                        font_color="#c8d8f0",
+                    )
+                    st.plotly_chart(_fig_mini, use_container_width=True)
+
+                    if _ai_txt:
+                        st.markdown(
+                            '<p style="font-size:0.83rem;color:#8aa0c0;line-height:1.5">'
+                            + _ai_txt + '</p>',
+                            unsafe_allow_html=True,
+                        )
+
+                with _pc2:
+                    if _actors:
+                        _act_str = ", ".join(str(a) for a in _actors[:4])
+                        st.markdown(
+                            '<div style="font-size:0.75rem;color:#ff8c42;margin-bottom:4px">'
+                            '⚠ Actors: <b>' + _act_str + '</b></div>',
+                            unsafe_allow_html=True,
+                        )
+                    if _miocs:
+                        _ioc_badges = ", ".join(
+                            '<span class="ioc-val">' + str(v)[:30] + '</span>'
+                            for v in _miocs[:4]
+                        )
+                        st.markdown(
+                            '<div style="font-size:0.72rem;color:#6e7fa3">'
+                            'Matched IOCs: ' + _ioc_badges +
+                            '</div>',
+                            unsafe_allow_html=True,
+                        )
+                    if _ttps:
+                        st.markdown(
+                            '<div style="font-size:0.72rem;color:#c084fc;margin-top:4px">'
+                            'TTPs: ' + ", ".join(str(t) for t in _ttps[:6]) +
+                            '</div>',
+                            unsafe_allow_html=True,
+                        )
+
+                # Immediate actions (red banner if present)
+                if _iacts:
+                    for _ia in _iacts[:3]:
+                        st.markdown(
+                            '<div style="background:rgba(255,77,109,0.12);border:1px solid #ff4d6d;'
+                            'border-radius:4px;padding:5px 10px;font-size:0.78rem;'
+                            'color:#ff8080;margin:3px 0">'
+                            '🚨 ' + str(_ia) + '</div>',
+                            unsafe_allow_html=True,
+                        )
+
+                # Recommendations
+                if _recs:
+                    st.markdown(
+                        '<div style="font-size:0.75rem;color:#6e7fa3;margin-top:6px">'
+                        '<b>Recommendations:</b></div>',
+                        unsafe_allow_html=True,
+                    )
+                    for _rec in _recs[:5]:
+                        st.markdown(
+                            '<div style="font-size:0.78rem;color:#8aa0c0;padding:2px 0 2px 10px">'
+                            '→ ' + str(_rec) + '</div>',
+                            unsafe_allow_html=True,
+                        )
+
+                st.markdown('</div>', unsafe_allow_html=True)
+                st.caption("Last assessed: " + _last + " UTC")
+
+    st.divider()
+
+    # ── Daily Briefing Panel ──────────────────────────────────────────────────
+    st.markdown("#### 📋 Latest Intelligence Briefing")
+
+    if _briefing_df.empty:
+        st.info("First briefing will be generated within the hour, or click **Research Now** above.")
+    else:
+        _br = _briefing_df.iloc[0]
+        _br_risk     = str(_br.get("risk_level", "medium")).lower()
+        _br_rc       = _risk_color_map.get(_br_risk, "#38bdf8")
+        _br_title    = str(_br.get("title", "Threat Intelligence Briefing"))
+        _br_summary  = str(_br.get("executive_summary", ""))
+        _br_findings = _br.get("key_findings") or []
+        _br_recs     = _br.get("recommendations") or []
+        _br_actors   = _br.get("trending_actors") or []
+        _br_iocs     = int(_br.get("ioc_count", 0) or 0)
+        _br_rpts     = int(_br.get("report_count", 0) or 0)
+
+        # Header card
+        st.markdown(
+            '<div style="background:linear-gradient(135deg,#0a1428,#0d1a30);'
+            'border:1px solid ' + _br_rc + ';border-radius:10px;padding:16px 20px;margin-bottom:14px">'
+            '<div style="display:flex;justify-content:space-between;align-items:center">'
+            '<span style="font-size:1rem;font-weight:700;color:#c8d8f0">' + _br_title + '</span>'
+            '<span style="background:' + _br_rc + '22;color:' + _br_rc + ';'
+            'border:1px solid ' + _br_rc + ';border-radius:4px;padding:2px 10px;'
+            'font-size:0.72rem;font-weight:700">' + _br_risk.upper() + '</span>'
+            '</div>'
+            '<div style="font-size:0.82rem;color:#8aa0c0;margin-top:8px;line-height:1.6">'
+            + _br_summary +
+            '</div>'
+            '<div style="margin-top:8px;font-size:0.72rem;color:#3d5a80">'
+            + str(_br_iocs) + ' IOCs · ' + str(_br_rpts) + ' reports analysed · '
+            + _briefing_time +
+            '</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        _bf1, _bf2 = st.columns(2)
+
+        with _bf1:
+            st.markdown("**🔍 Key Findings**")
+            if _br_findings:
+                for _idx, _f in enumerate(_br_findings, 1):
+                    st.markdown(
+                        '<div style="font-size:0.8rem;color:#8aa0c0;padding:3px 0">'
+                        '<span style="color:' + _br_rc + ';font-weight:700">' + str(_idx) + '.&nbsp;</span>'
+                        + str(_f) + '</div>',
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.caption("Analysis pending — no AI backend configured or no data yet.")
+
+        with _bf2:
+            st.markdown("**🛡 Defensive Recommendations**")
+            if _br_recs:
+                for _rec in _br_recs[:5]:
+                    st.markdown(
+                        '<div style="font-size:0.8rem;color:#8aa0c0;padding:3px 0">'
+                        '→&nbsp;' + str(_rec) + '</div>',
+                        unsafe_allow_html=True,
+                    )
+            if _br_actors:
+                st.markdown("**⚡ Trending Threat Actors**")
+                _actor_html = " &nbsp; ".join(
+                    '<span class="badge-critical">' + str(a) + '</span>'
+                    for a in _br_actors[:6]
+                )
+                st.markdown(_actor_html, unsafe_allow_html=True)
+
+    st.divider()
+
+    # ── Threat Actor Intelligence ─────────────────────────────────────────────
+    st.markdown("#### 👤 Threat Actor Intelligence")
+    if not reports.empty and "threat_actor" in reports.columns:
+        _ta_df = (
+            reports[reports["threat_actor"].notna() & (reports["threat_actor"] != "Unknown")]
+            .groupby("threat_actor")
+            .agg(
+                reports=("id", "count"),
+                avg_confidence=("confidence_score", "mean"),
+                latest=("created_at", "max"),
+                feeds=("source_feed", lambda x: ", ".join(sorted(set(x))[:3])),
+            )
+            .reset_index()
+            .sort_values("reports", ascending=False)
+            .head(20)
+        )
+
+        if not _ta_df.empty:
+            _ta_c1, _ta_c2 = st.columns([3, 2])
+
+            with _ta_c1:
+                _fig_ta = px.bar(
+                    _ta_df.head(12), x="reports", y="threat_actor",
+                    orientation="h",
+                    color="avg_confidence",
+                    color_continuous_scale=[[0, "#1a0a30"], [0.5, "#7c3aed"], [1, "#c084fc"]],
+                    labels={"threat_actor": "", "reports": "Reports",
+                            "avg_confidence": "Avg Confidence"},
+                )
+                _fig_ta.update_coloraxes(showscale=True, colorbar=dict(
+                    title="Conf", len=0.5, thickness=10,
+                    tickfont=dict(color="#6e7fa3", size=9),
+                ))
+                _fig_ta.update_layout(**_PLOTLY_DARK, height=360,
+                                      yaxis=dict(autorange="reversed"))
+                _fig_ta.update_layout(clickmode="event+select")
+                _ta_sel = st.plotly_chart(_fig_ta, on_select="rerun",
+                                          use_container_width=True, key="adv_actor_bar")
+                _drill_ta = None
+                if _ta_sel and _ta_sel.selection and _ta_sel.selection.points:
+                    _drill_ta = _ta_sel.selection.points[0].get("y")
+
+            with _ta_c2:
+                if _drill_ta:
+                    _ta_rpts = reports[reports["threat_actor"] == _drill_ta]
+                    _ta_iocs = iocs[iocs["report_id"].isin(_ta_rpts["id"])] if not iocs.empty and "report_id" in iocs.columns else pd.DataFrame()
+                    _ta_ttp_all: list = []
+                    for _tval in _ta_rpts["ttps"].dropna():
+                        if isinstance(_tval, list):
+                            _ta_ttp_all.extend(_tval)
+                    st.markdown(
+                        '<div class="metric-card" style="border-left:3px solid #c084fc">'
+                        '<b style="color:#c8d8f0">' + str(_drill_ta) + '</b><br>'
+                        '<span style="font-size:0.75rem;color:#6e7fa3">'
+                        + str(len(_ta_rpts)) + ' reports · '
+                        + str(len(_ta_iocs)) + ' IOCs · '
+                        + str(len(set(_ta_ttp_all))) + ' unique TTPs</span>'
+                        '</div>',
+                        unsafe_allow_html=True,
+                    )
+                    if _ta_ttp_all:
+                        _ttp_ctr = Counter(_ta_ttp_all).most_common(8)
+                        _ttp_df  = pd.DataFrame(_ttp_ctr, columns=["ttp", "count"])
+                        _fig_ttp = px.bar(
+                            _ttp_df, x="count", y="ttp", orientation="h",
+                            color="count",
+                            color_continuous_scale=[[0,"#0d1a30"],[1,"#818cf8"]],
+                            labels={"ttp": "", "count": "Obs"},
+                        )
+                        _fig_ttp.update_coloraxes(showscale=False)
+                        _fig_ttp.update_layout(**_PLOTLY_DARK, height=240,
+                                               yaxis=dict(autorange="reversed"))
+                        st.plotly_chart(_fig_ttp, use_container_width=True)
+                    _ta_ioc_cols = [c for c in ["ioc_type", "value", "malware_family"]
+                                    if c in _ta_iocs.columns]
+                    if _ta_ioc_cols:
+                        st.dataframe(_ta_iocs[_ta_ioc_cols].head(10),
+                                     use_container_width=True, hide_index=True)
+                else:
+                    st.markdown(
+                        '<div class="metric-card" style="text-align:center;padding:30px">'
+                        '<div style="font-size:2.5rem">👤</div>'
+                        '<div style="font-size:0.8rem;color:#3d5a80;margin-top:8px">'
+                        'Click an actor bar to see their IOCs, TTPs, and campaign history'
+                        '</div></div>',
+                        unsafe_allow_html=True,
+                    )
+        else:
+            st.info("Threat actor data will populate as the AI enrichment processes reports.")
+    else:
+        st.info("No threat reports yet — feeds are initialising.")
+
+    st.divider()
+
+    # ── Kill Chain Phase Distribution ─────────────────────────────────────────
+    st.markdown("#### ⛓ Kill Chain Phase Distribution")
+    _kc_map = {
+        "T1595": "Reconnaissance", "T1592": "Reconnaissance", "T1589": "Reconnaissance",
+        "T1598": "Weaponisation", "T1587": "Weaponisation", "T1588": "Weaponisation",
+        "T1566": "Delivery", "T1190": "Exploitation", "T1203": "Exploitation",
+        "T1059": "Installation", "T1055": "Installation", "T1543": "Installation",
+        "T1071": "C2", "T1572": "C2", "T1090": "C2",
+        "T1041": "Exfiltration", "T1567": "Exfiltration",
+        "T1486": "Actions on Obj.", "T1490": "Actions on Obj.",
+    }
+    _kc_order = ["Reconnaissance","Weaponisation","Delivery","Exploitation",
+                 "Installation","C2","Exfiltration","Actions on Obj."]
+
+    if not reports.empty:
+        _all_ttps: list = []
+        for _tval in reports["ttps"].dropna():
+            if isinstance(_tval, list):
+                _all_ttps.extend(_tval)
+
+        if _all_ttps:
+            _kc_counts: dict = {k: 0 for k in _kc_order}
+            for _t in _all_ttps:
+                _prefix = str(_t)[:5]
+                for _tid, _phase in _kc_map.items():
+                    if _prefix == _tid or str(_t).startswith(_tid):
+                        _kc_counts[_phase] = _kc_counts.get(_phase, 0) + 1
+                        break
+
+            _kc_df = pd.DataFrame([
+                {"phase": k, "count": v, "order": i}
+                for i, (k, v) in enumerate(_kc_counts.items())
+            ])
+            _kc_colors = ["#38bdf8","#818cf8","#c084fc","#fb923c",
+                          "#f87171","#ff4d6d","#ffd166","#06d6a0"]
+            _kc_df_sorted = _kc_df.sort_values("order")
+            _fig_kc = px.bar(
+                _kc_df_sorted, x="count", y="phase",
+                orientation="h",
+                color="phase",
+                color_discrete_sequence=_kc_colors,
+            )
+            _fig_kc.update_layout(**_PLOTLY_DARK, height=320, showlegend=False)
+            st.plotly_chart(_fig_kc, use_container_width=True)
+            st.caption("Lockheed Martin Cyber Kill Chain — mapped from MITRE ATT&CK TTPs")
+        else:
+            st.info("Kill chain mapping populates as AI enrichment processes reports and extracts TTPs.")
+    else:
+        st.info("No threat data yet.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

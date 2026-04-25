@@ -237,4 +237,40 @@ class APIKey(Base):
     created_at  = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class ThreatBriefing(Base):
+    """AI-generated threat intelligence briefings (daily or on-demand)."""
+    __tablename__ = "threat_briefings"
+    id                = Column(Integer, primary_key=True, index=True)
+    briefing_type     = Column(String(50), default="daily")   # daily, on_demand
+    title             = Column(String(500))
+    executive_summary = Column(Text)
+    key_findings      = Column(JSON, default=list)
+    recommendations   = Column(JSON, default=list)
+    trending_actors   = Column(JSON, default=list)
+    risk_level        = Column(String(20), default="medium")
+    ioc_count         = Column(Integer, default=0)
+    report_count      = Column(Integer, default=0)
+    period_hours      = Column(Integer, default=24)
+    generated_at      = Column(DateTime(timezone=True),
+                               default=lambda: datetime.now(timezone.utc))
+
+
+class AssetThreatProfile(Base):
+    """Per-asset AI threat assessment — updated each research cycle."""
+    __tablename__ = "asset_threat_profiles"
+    id                = Column(Integer, primary_key=True, index=True)
+    watched_asset_id  = Column(Integer, ForeignKey("watched_assets.id"),
+                               index=True, unique=True)
+    risk_score        = Column(Integer, default=0)
+    risk_level        = Column(String(20), default="low")
+    matched_iocs      = Column(JSON, default=list)
+    matched_actors    = Column(JSON, default=list)
+    attack_vectors    = Column(JSON, default=list)
+    recommendations   = Column(JSON, default=list)
+    immediate_actions = Column(JSON, default=list)
+    ai_assessment     = Column(Text)
+    last_assessed     = Column(DateTime(timezone=True),
+                               default=lambda: datetime.now(timezone.utc))
+
+
 Base.metadata.create_all(bind=engine)
