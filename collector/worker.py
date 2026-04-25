@@ -686,22 +686,167 @@ def _process_dshield(db: Session, items: list) -> int:
     return saved
 
 
+def _process_ransomware_live(db: Session, items: list) -> int:
+    """Ransomware.live (ransomwatch) — named groups, victim orgs, countries, sectors."""
+    saved = 0
+    for item in items:
+        group       = str(item.get("group_name") or "Unknown Ransomware Group").strip()
+        victim      = str(item.get("post_title") or item.get("victim") or "Unknown").strip()
+        discovered  = str(item.get("discovered") or "").strip()
+        website     = str(item.get("website") or "").strip()
+        description = str(item.get("description") or "").strip()
+        country     = str(item.get("country") or "").strip()
+        activity    = str(item.get("activity") or "").strip()
+        meta        = item.get("_group_meta") or {}
+
+        # Unique ID: group + victim (title can repeat across time)
+        import hashlib as _hl
+        source_id = "rlive_" + _hl.md5((group + victim + discovered[:10]).encode()).hexdigest()[:20]
+        if db.query(ThreatReport).filter_by(source_id=source_id).first():
+            continue
+
+        # Build group description from metadata if available
+        meta_desc = str(meta.get("meta") or meta.get("description") or "").strip()
+        raw = (
+            "Ransomware.live: {group} ransomware group claimed attack on {victim}. "
+            "Victim website: {website}. "
+            "Country: {country}. "
+            "Industry/sector: {activity}. "
+            "Discovered: {discovered}. "
+            "Description: {desc}. "
+            "Group profile: {meta_desc}"
+        ).format(
+            group=group, victim=victim, website=website,
+            country=country, activity=activity, discovered=discovered,
+            desc=description[:400], meta_desc=meta_desc[:300],
+        )
+
+        summary = (
+            "{group} ransomware attacked {victim}"
+            "{country_part}{sector_part}. "
+            "Discovered {discovered_short}."
+        ).format(
+            group=group,
+            victim=victim,
+            country_part=" ({})".format(country) if country else "",
+            sector_part=" in the {} sector".format(activity) if activity else "",
+            discovered_short=discovered[:10],
+        )
+
+        report = ThreatReport(
+            source_feed="ransomware_live",
+            source_id=source_id,
+            threat_actor=group,
+            target_industry=activity or "Unknown",
+            ttps=["T1486", "T1490", "T1489"],   # Impact: Data Encrypted, Inhibit Recovery, Service Stop
+            confidence_score=85,
+            raw_source=raw[:2000],
+            summary=summary[:500],
+        )
+        db.add(report)
+        db.flush()
+
+        # IOC: the victim website domain if available
+        if website:
+            try:
+                from urllib.parse import urlparse as _up
+                host = _up(website if "://" in website else "https://" + website).hostname or ""
+                if host:
+                    db.add(IOC(
+                        report_id=report.id,
+                        ioc_type="domain",
+                        value=host[:512],
+                        malware_family=group,
+                        tags=["ransomware", group.lower(), "victim"],
+                    ))
+            except Exception:
+                pass
+
+        saved += 1
+    db.commit()
+    return saved
+
+
+def _process_cybercrime_tracker(db: Session, items: list) -> int:
+    """Cybercrime Tracker — active malware C2 panels with named malware families."""
+    import re as _re
+    from urllib.parse import urlparse as _up
+    _IP_RE = _re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
+    saved = 0
+    for item in items:
+        url_val  = str(item.get("url") or "").strip()
+        malware  = str(item.get("malware") or "Unknown").strip()
+        status   = str(item.get("status") or "online").strip().lower()
+        date_val = str(item.get("date") or "").strip()
+        if not url_val or not url_val.startswith("http"):
+            continue
+
+        source_id = "cct_" + str(item.get("id", ""))
+        if db.query(ThreatReport).filter_by(source_id=source_id).first():
+            continue
+
+        try:
+            host = _up(url_val).hostname or ""
+        except Exception:
+            host = ""
+
+        raw = (
+            "Cybercrime Tracker C2 Panel: {url}. "
+            "Malware family: {malware}. "
+            "Panel status: {status}. "
+            "Host: {host}. "
+            "First seen: {date}. "
+            "This is an active command-and-control panel for {malware} malware, "
+            "used by operators to manage infected victims."
+        ).format(
+            url=url_val, malware=malware, status=status,
+            host=host, date=date_val,
+        )
+        summary = (
+            "{malware} C2 panel at {host} ({status}). "
+            "Active malware command-and-control infrastructure."
+        ).format(malware=malware, host=host or url_val[:40], status=status)
+
+        report = ThreatReport(
+            source_feed="cybercrime_tracker",
+            source_id=source_id,
+            threat_actor=malware,       # malware family IS the actor proxy here
+            confidence_score=80,
+            raw_source=raw[:2000],
+            summary=summary[:500],
+        )
+        db.add(report)
+        db.flush()
+
+        tags = [malware.lower(), "c2", "panel", status]
+        db.add(IOC(report_id=report.id, ioc_type="url",
+                   value=url_val[:512], malware_family=malware, tags=tags))
+        if host:
+            host_type = "ip" if _IP_RE.match(host) else "domain"
+            db.add(IOC(report_id=report.id, ioc_type=host_type,
+                       value=host[:512], malware_family=malware, tags=tags))
+        saved += 1
+    db.commit()
+    return saved
+
+
 _PROCESSORS = {
-    "cisa_kev": _process_cisa_kev,
-    "threatfox": _process_threatfox,
-    "urlhaus": _process_urlhaus,
-    "malwarebazaar": _process_malwarebazaar,
-    "nvd": _process_nvd,
-    "mitre_attack": _process_mitre_attack,
-    "otx": _process_otx,
-    "darkweb": _process_darkweb,
-    "rss_feeds": _process_rss,
-    "cert_transparency": _process_cert_transparency,
-    "github_monitor": _process_github,
-    "feodo_tracker": _process_feodo_tracker,
-    "sslbl": _process_sslbl,
-    "openphish": _process_openphish,
-    "dshield": _process_dshield,
+    "cisa_kev":           _process_cisa_kev,
+    # threatfox/urlhaus removed — replaced by ransomware_live and cybercrime_tracker
+    "malwarebazaar":      _process_malwarebazaar,
+    "nvd":                _process_nvd,
+    "mitre_attack":       _process_mitre_attack,
+    "otx":                _process_otx,
+    "darkweb":            _process_darkweb,
+    "rss_feeds":          _process_rss,
+    "cert_transparency":  _process_cert_transparency,
+    "github_monitor":     _process_github,
+    "feodo_tracker":      _process_feodo_tracker,
+    "sslbl":              _process_sslbl,
+    "openphish":          _process_openphish,
+    "dshield":            _process_dshield,
+    "ransomware_live":    _process_ransomware_live,
+    "cybercrime_tracker": _process_cybercrime_tracker,
 }
 
 

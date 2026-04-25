@@ -3466,7 +3466,7 @@ with tab_advisor:
             # Write a flag to platform_settings so the collector bypasses its
             # 1-hour rate limit and runs a research cycle on next loop (≤30 s).
             try:
-                with engine.begin() as _rc:
+                with get_engine().begin() as _rc:
                     _rc.execute(
                         __import__("sqlalchemy").text(
                             "INSERT INTO platform_settings (key, value, updated_by) "
