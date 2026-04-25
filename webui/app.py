@@ -1470,7 +1470,35 @@ with tab_dash:
                     fig_tl.update_layout(**_PLOTLY_DARK, height=240, showlegend=True,
                                          legend=dict(orientation="h", y=-0.25))
                     fig_tl.update_traces(hovertemplate="%{x|%b %d}: %{y}<extra>%{fullData.name}</extra>")
-                    st.plotly_chart(fig_tl, use_container_width=True)
+                    fig_tl.update_layout(clickmode="event+select")
+                    _tl_sel = st.plotly_chart(fig_tl, on_select="rerun",
+                                              use_container_width=True, key="dash_timeline")
+                    _drill_tl_feed = None
+                    if _tl_sel and _tl_sel.selection and _tl_sel.selection.points:
+                        _tl_pt = _tl_sel.selection.points[0]
+                        _drill_tl_feed = (
+                            _tl_pt.get("customdata", [None])[0]
+                            if _tl_pt.get("customdata") else None
+                        )
+                        if not _drill_tl_feed:
+                            # Try to match by trace index against source_feed order
+                            _tl_src_order = _tl_grp["source_feed"].unique().tolist()
+                            _tl_ti = _tl_pt.get("curveNumber", -1)
+                            if 0 <= _tl_ti < len(_tl_src_order):
+                                _drill_tl_feed = _tl_src_order[_tl_ti]
+                    if _drill_tl_feed:
+                        _tl_feed_rpts = reports[reports["source_feed"] == _drill_tl_feed]
+                        st.markdown(
+                            f'<div class="metric-card" style="border-left:3px solid #38bdf8">'
+                            f'<b style="color:#c8d8f0">{_drill_tl_feed}</b> \u2014 '
+                            f'{len(_tl_feed_rpts):,} reports</div>',
+                            unsafe_allow_html=True)
+                        _tl_cols = [c for c in ["created_at","threat_actor","summary","confidence_score"]
+                                    if c in _tl_feed_rpts.columns]
+                        st.dataframe(_tl_feed_rpts[_tl_cols].head(15),
+                                     use_container_width=True, hide_index=True)
+                    else:
+                        st.caption("Click an area or point to drill into that feed's reports")
                 else:
                     st.info("No timeline data in last 30 days.")
             else:
@@ -1660,11 +1688,40 @@ with tab_dash:
                 paper_bgcolor="#050810", margin=dict(l=0, r=0, t=0, b=0),
                 height=360, font_color="#c8d8f0",
             )
-            st.plotly_chart(_fig_map, use_container_width=True)
-            # Country breakdown
-            _top_countries = _geo_df["country"].value_counts().head(5)
-            _cc_parts = [f"**{c}** {n}" for c, n in _top_countries.items()]
-            st.caption("Top origins: " + " · ".join(_cc_parts))
+            _fig_map.update_layout(clickmode="event+select")
+            _map_sel = st.plotly_chart(_fig_map, on_select="rerun",
+                                       use_container_width=True, key="dash_geo_map")
+            _drill_map_country = None
+            if _map_sel and _map_sel.selection and _map_sel.selection.points:
+                _map_pt = _map_sel.selection.points[0]
+                _map_pt_idx = _map_pt.get("point_index", -1)
+                if 0 <= _map_pt_idx < len(_geo_df):
+                    _drill_map_country = _geo_df.iloc[_map_pt_idx]["country"]
+            if _drill_map_country:
+                _country_ips = set(
+                    _geo_df[_geo_df["country"] == _drill_map_country]["query"].tolist()
+                )
+                _country_iocs = iocs[iocs["value"].isin(_country_ips)]
+                _country_rpts = reports[reports["source_feed"].isin(
+                    _country_iocs["report_id"].map(
+                        dict(zip(iocs["id"], iocs.get("report_id", iocs.index)))
+                    ).dropna().astype(int).tolist()
+                )] if "report_id" in iocs.columns else pd.DataFrame()
+                st.markdown(
+                    f'<div class="metric-card" style="border-left:3px solid #38bdf8">'
+                    f'\U0001f30d <b style="color:#c8d8f0">{_drill_map_country}</b> \u2014 '
+                    f'{len(_country_ips)} unique IP(s), {len(_country_iocs)} IOC(s)</div>',
+                    unsafe_allow_html=True)
+                _geo_ioc_cols = [c for c in ["ioc_type","value","malware_family"] if c in _country_iocs.columns]
+                st.dataframe(_country_iocs[_geo_ioc_cols].head(20),
+                             use_container_width=True, hide_index=True)
+                _top_countries = _geo_df["country"].value_counts().head(5)
+                _cc_parts = [f"**{c}** {n}" for c, n in _top_countries.items()]
+                st.caption("Top origins: " + " \u00b7 ".join(_cc_parts))
+            else:
+                _top_countries = _geo_df["country"].value_counts().head(5)
+                _cc_parts = [f"**{c}** {n}" for c, n in _top_countries.items()]
+                st.caption("Top origins: " + " \u00b7 ".join(_cc_parts) + " \u00b7 Click a bubble to see IOCs from that country")
         else:
             # Offline fallback: country bar from available CVE data
             st.markdown(
@@ -1692,8 +1749,48 @@ with tab_dash:
         if not reports.empty:
             st.markdown("#### Threat Actor Relationship Network")
             _net_fig = _build_network_graph(reports, iocs)
-            st.plotly_chart(_net_fig, use_container_width=True)
-            st.caption("Red = threat actors · Purple = TTPs. Top 5 actors and their top 3 observed techniques.")
+            _net_fig.update_layout(clickmode="event+select")
+            _net_sel = st.plotly_chart(_net_fig, on_select="rerun",
+                                       use_container_width=True, key="dash_network")
+            _drill_node = None
+            if _net_sel and _net_sel.selection and _net_sel.selection.points:
+                _np = _net_sel.selection.points[0]
+                _drill_node = _np.get("text") or _np.get("hovertext") or ""
+            if _drill_node and _drill_node.strip():
+                # Determine node type by matching against known data
+                _drill_node_clean = str(_drill_node).strip()
+                _known_feeds  = set(reports["source_feed"].dropna().unique())
+                _known_actors = set(reports["threat_actor"].dropna().unique())
+                _node_reports = pd.DataFrame()
+                _node_label   = _drill_node_clean
+                if _drill_node_clean in _known_feeds:
+                    _node_reports = reports[reports["source_feed"] == _drill_node_clean]
+                    _node_label   = f"Feed: {_drill_node_clean}"
+                elif _drill_node_clean in _known_actors:
+                    _node_reports = reports[reports["threat_actor"] == _drill_node_clean]
+                    _node_label   = f"Actor: {_drill_node_clean}"
+                else:
+                    # TTP — search in ttps JSON field
+                    _node_reports = reports[
+                        reports["ttps"].apply(
+                            lambda t: _drill_node_clean in (t if isinstance(t, list) else [])
+                        )
+                    ] if "ttps" in reports.columns else pd.DataFrame()
+                    _node_label = f"TTP: {_drill_node_clean}"
+                if not _node_reports.empty:
+                    st.markdown(
+                        f'<div class="metric-card" style="border-left:3px solid #818cf8">'
+                        f'<b style="color:#c8d8f0">{_node_label}</b> \u2014 '
+                        f'{len(_node_reports)} report(s)</div>',
+                        unsafe_allow_html=True)
+                    _nc = [c for c in ["created_at","source_feed","threat_actor","summary","confidence_score"]
+                           if c in _node_reports.columns]
+                    st.dataframe(_node_reports[_nc].head(10),
+                                 use_container_width=True, hide_index=True)
+                else:
+                    st.caption(f"No report data found for node: {_drill_node_clean}")
+            else:
+                st.caption("Click any node to explore \u2014 Red=actors \u00b7 Cyan=feeds \u00b7 Purple=TTPs \u00b7 Green=industries")
             st.divider()
 
         # ── Row 3: CVE severity + Watchlist alert trend ───────────────────────
@@ -1761,8 +1858,28 @@ with tab_dash:
                     )
                     fig_h.update_layout(**_PLOTLY_DARK, height=260)
                     fig_h.update_traces(hovertemplate="%{x|%b %d}: %{y} hits<extra>%{fullData.name}</extra>")
-                    st.plotly_chart(fig_h, use_container_width=True)
-                    st.caption(f"{open_hits:,} unacknowledged · Click 🔔 Alerts tab to review")
+                    fig_h.update_layout(clickmode="event+select")
+                    _hit_bar_sel = st.plotly_chart(fig_h, on_select="rerun",
+                                                   use_container_width=True, key="dash_hit_trend")
+                    if _hit_bar_sel and _hit_bar_sel.selection and _hit_bar_sel.selection.points:
+                        _hbpt = _hit_bar_sel.selection.points[0]
+                        _drill_hit_date = str(_hbpt.get("x", ""))[:10]
+                        if _drill_hit_date:
+                            _dhits = hits_df[
+                                pd.to_datetime(hits_df["found_at"], utc=True, errors="coerce")
+                                  .dt.strftime("%Y-%m-%d") == _drill_hit_date
+                            ]
+                            st.markdown(
+                                f'<div class="metric-card" style="border-left:3px solid #ffd166">'
+                                f'<b style="color:#c8d8f0">Hits on {_drill_hit_date}</b> \u2014 '
+                                f'{len(_dhits)} alert(s)</div>',
+                                unsafe_allow_html=True)
+                            _dhcols = [c for c in ["hit_type","severity","source_feed","matched_value","context","found_at"]
+                                       if c in _dhits.columns]
+                            st.dataframe(_dhits[_dhcols].head(20),
+                                         use_container_width=True, hide_index=True)
+                    else:
+                        st.caption(f"{open_hits:,} unacknowledged \u00b7 Click a bar to see that day's hits")
                 else:
                     st.info("No watchlist hits in the last 14 days.")
             else:
@@ -1784,15 +1901,15 @@ with tab_dash:
                     labels={"source_feed":"","count":"Reports"},
                 )
                 fig_src.update_coloraxes(showscale=False)
-                fig_src.update_layout(**_PLOTLY_DARK, height=280)
+                fig_src.update_layout(**_PLOTLY_DARK, height=280, clickmode="event+select")
                 fig_src.update_traces(hovertemplate="%{y}: %{x} reports<extra></extra>")
-                st.plotly_chart(fig_src, use_container_width=True)
-
-                # Drill-down: click a source to filter
-                _src_drill = st.selectbox(
-                    "Drill into source →", ["All"] + sorted(reports["source_feed"].dropna().unique().tolist()),
-                    key="dash_src_drill",
-                )
+                _src_bar_sel = st.plotly_chart(fig_src, on_select="rerun",
+                                               use_container_width=True, key="dash_src_bar")
+                _src_drill = "All"
+                if _src_bar_sel and _src_bar_sel.selection and _src_bar_sel.selection.points:
+                    _sbpt = _src_bar_sel.selection.points[0]
+                    _src_drill = _sbpt.get("y") or "All"
+                st.caption("Click a bar to drill into that feed's reports")
             else:
                 _src_drill = "All"
 
@@ -2265,7 +2382,26 @@ with tab_iocs:
                             margin=dict(l=0, r=0, t=0, b=0),
                             height=320, font_color="#c8d8f0",
                         )
-                        st.plotly_chart(_fig_hmap, use_container_width=True)
+                        _fig_hmap.update_layout(clickmode="event+select")
+                        _hmap_sel = st.plotly_chart(_fig_hmap, on_select="rerun",
+                                                    use_container_width=True, key="hunt_geo_map")
+                        _drill_hmap_country = None
+                        if _hmap_sel and _hmap_sel.selection and _hmap_sel.selection.points:
+                            _hmpt = _hmap_sel.selection.points[0]
+                            _hmpt_idx = _hmpt.get("point_index", -1)
+                            if 0 <= _hmpt_idx < len(_hgeo_df):
+                                _drill_hmap_country = _hgeo_df.iloc[_hmpt_idx]["country"]
+                        if _drill_hmap_country:
+                            _hmap_ips = set(_hgeo_df[_hgeo_df["country"] == _drill_hmap_country]["query"].tolist())
+                            _hmap_iocs = iocs[iocs["value"].isin(_hmap_ips)]
+                            st.markdown(
+                                f'<div class="metric-card" style="border-left:3px solid #38bdf8">'
+                                f'\U0001f30d <b style="color:#c8d8f0">{_drill_hmap_country}</b> \u2014 '
+                                f'{len(_hmap_ips)} IP(s) \u00b7 {len(_hmap_iocs)} IOC(s)</div>',
+                                unsafe_allow_html=True)
+                            _hmc = [c for c in ["ioc_type","value","malware_family"] if c in _hmap_iocs.columns]
+                            st.dataframe(_hmap_iocs[_hmc].head(20),
+                                         use_container_width=True, hide_index=True)
                         _htop = _hgeo_df["country"].value_counts().head(6)
                         _hparts = [f"**{c}** {n}" for c, n in _htop.items()]
                         st.caption("Top origins: " + " · ".join(_hparts))
@@ -2391,9 +2527,33 @@ with tab_cves:
                     labels={"label": "CVE ID", "cvss_score": "CVSS Score"},
                     size_max=10,
                 )
-                fig_c.update_layout(**_PLOTLY_DARK, height=300,
+                fig_c.update_layout(**_PLOTLY_DARK, height=300, clickmode="event+select",
                                     xaxis=dict(tickangle=45, tickfont=dict(size=8)))
-                st.plotly_chart(fig_c, use_container_width=True)
+                _cve_sc_sel = st.plotly_chart(fig_c, on_select="rerun",
+                                              use_container_width=True, key="cve_cvss_scatter")
+                if _cve_sc_sel and _cve_sc_sel.selection and _cve_sc_sel.selection.points:
+                    _scpt = _cve_sc_sel.selection.points[0]
+                    _drill_cve_id = _scpt.get("x") or ""
+                    if _drill_cve_id:
+                        _dcve = fc[fc["cve_id"] == _drill_cve_id]
+                        if not _dcve.empty:
+                            _dcve_row = _dcve.iloc[0]
+                            st.markdown(
+                                f'<div class="metric-card" style="border-left:3px solid #ff8c42">'
+                                f'<b style="color:#c8d8f0">{_drill_cve_id}</b> '
+                                f'CVSS {_dcve_row.get("cvss_score","?")} \u2014 '
+                                f'{_dcve_row.get("vendor","?")} / {_dcve_row.get("product","?")}'
+                                f'</div>', unsafe_allow_html=True)
+                            st.markdown(
+                                f'<div style="font-size:0.82rem;color:#8aa0c0;padding:6px 0">'
+                                f'{str(_dcve_row.get("description","No description available."))[:800]}'
+                                f'</div>', unsafe_allow_html=True)
+                            if _dcve_row.get("cisa_due_date"):
+                                st.markdown(
+                                    f'<span class="badge-critical">CISA KEV due: {_dcve_row["cisa_due_date"]}</span>',
+                                    unsafe_allow_html=True)
+                else:
+                    st.caption("Click any dot to read the full CVE description")
 
         st.caption(f"{len(fc):,} CVEs match")
         dcols = [c for c in ["cve_id", "cvss_score", "vendor", "product",

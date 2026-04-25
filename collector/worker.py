@@ -67,12 +67,24 @@ def _process_threatfox(db: Session, items: list) -> int:
         ioc_val   = item.get("ioc_value", "")
         tags      = item.get("tags") or []
 
+        raw = (
+            f"ThreatFox IOC: {ioc_val} (type: {ioc_type}). "
+            f"Malware: {malware}. "
+            f"Threat type: {item.get('threat_type', '')} \u2014 {item.get('threat_type_desc', '')}. "
+            f"Confidence: {item.get('confidence_level', 0)}%. "
+            f"Reporter: {item.get('reporter', 'Unknown')}. "
+            f"Malware aliases: {', '.join(item.get('malware_alias', []) or [])}. "
+            f"Tags: {', '.join(str(t) for t in tags)}. "
+            f"First seen: {item.get('first_seen', '')}. "
+            f"Last seen: {item.get('last_seen', '')}."
+        )
         report = ThreatReport(
             source_feed="threatfox",
             source_id=source_id,
             threat_actor=actor,
             confidence_score=int(item.get("confidence_level") or 0),
-            raw_source=str(item)[:2000],
+            raw_source=raw[:2000],
+            summary=f"{malware} IOC ({ioc_type}): {ioc_val[:60]}. Threat: {item.get('threat_type', '')}.",
         )
         db.add(report)
         db.flush()
@@ -132,17 +144,38 @@ def _process_urlhaus(db: Session, items: list) -> int:
         threat  = item.get("threat", "")
         malware = ", ".join(str(t) for t in tags[:3]) or threat or "Unknown"
 
+        url_val = item.get("url", "")
+        host = (item.get("host") or "").strip()
+        if not host and url_val:
+            try:
+                from urllib.parse import urlparse as _urlparse
+                host = _urlparse(url_val).hostname or ""
+            except Exception:
+                host = ""
+        _bl = item.get("blacklists") or {}
+        _bl_listed = ', '.join(k for k, v in _bl.items() if str(v).lower() == 'listed')
+        raw = (
+            f"URLhaus malicious URL: {url_val}. "
+            f"Host: {host}. "
+            f"Status: {item.get('url_status', 'unknown')}. "
+            f"Threat type: {threat}. "
+            f"Malware tags: {', '.join(str(t) for t in tags)}. "
+            f"Reporter: {item.get('reporter', 'Unknown')}. "
+            f"Date added: {item.get('date_added', '')}. "
+            f"URLhaus reference: {item.get('urlhaus_reference', '')}. "
+            f"Blacklisted by: {_bl_listed}."
+        )
         report = ThreatReport(
             source_feed="urlhaus",
             source_id=source_id,
             threat_actor="Unknown",
             confidence_score=70,
-            raw_source=str(item)[:2000],
+            raw_source=raw[:2000],
+            summary=f"Malicious URL ({threat}) hosted at {host}. Status: {item.get('url_status', 'unknown')}.",
         )
         db.add(report)
         db.flush()
 
-        url_val = item.get("url", "")
         if url_val:
             db.add(IOC(
                 report_id=report.id,
@@ -152,14 +185,6 @@ def _process_urlhaus(db: Session, items: list) -> int:
                 tags=tags,
             ))
 
-        # URLhaus provides a 'host' field (IP or domain) — store as dedicated IOC
-        # so geolocation and domain analytics can work on it directly.
-        host = (item.get("host") or "").strip()
-        if not host and url_val:
-            try:
-                host = urlparse(url_val).hostname or ""
-            except Exception:
-                host = ""
         if host:
             host_type = "ip" if _IP_RE.match(host) else "domain"
             db.add(IOC(
@@ -493,6 +518,173 @@ def _process_github(db: Session, items: list) -> int:
     return saved
 
 
+def _process_feodo_tracker(db: Session, items: list) -> int:
+    """Feodo Tracker C2 IPs — store ip and ip:port IOCs with full botnet context."""
+    import re
+    _IP_RE = re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
+    saved = 0
+    for item in items:
+        ip      = str(item.get("ip_address", "") or "").strip()
+        malware = str(item.get("malware", "Unknown") or "Unknown")
+        status  = str(item.get("status", "") or "")
+        port    = item.get("port")
+        country = str(item.get("country", "") or "")
+        if not ip or not _IP_RE.match(ip):
+            continue
+        source_id = f"feodo_{ip}_{malware}"
+        if db.query(ThreatReport).filter_by(source_id=source_id).first():
+            continue
+        raw = (
+            f"Feodo Tracker C2 Server: {ip} port {port}. "
+            f"Malware family: {malware}. Status: {status}. "
+            f"Country: {country}. "
+            f"First seen: {item.get('first_seen_utc', '')}. "
+            f"Last online: {item.get('last_online', '')}. "
+            f"Registrar/ISP: {item.get('registrar', '')}. "
+            f"This IP is a known command-and-control server for the {malware} botnet."
+        )
+        report = ThreatReport(
+            source_feed="feodo_tracker",
+            source_id=source_id,
+            threat_actor=malware,
+            confidence_score=90,
+            raw_source=raw[:2000],
+            summary=f"{malware} C2 server at {ip}:{port} ({country}). Status: {status}.",
+        )
+        db.add(report)
+        db.flush()
+        tags = [malware, "c2", "botnet"]
+        db.add(IOC(report_id=report.id, ioc_type="ip",
+                   value=ip, malware_family=malware, tags=tags))
+        if port:
+            db.add(IOC(report_id=report.id, ioc_type="ip:port",
+                       value=f"{ip}:{port}", malware_family=malware, tags=tags))
+        saved += 1
+    db.commit()
+    return saved
+
+
+def _process_sslbl(db: Session, items: list) -> int:
+    """SSL Blacklist — malicious SSL certificate SHA1 fingerprints."""
+    saved = 0
+    for item in items:
+        sha1 = str(item.get("sha1_fingerprint", "") or "").strip()
+        if not sha1:
+            continue
+        source_id = f"sslbl_{sha1}"
+        if db.query(ThreatReport).filter_by(source_id=source_id).first():
+            continue
+        tags_list = item.get("tags") or []
+        reason    = str(item.get("reason", "") or "")
+        cn        = str(item.get("subject_cn", "") or "")
+        issuer    = str(item.get("issuer_cn", "") or "")
+        malware   = (tags_list[0] if tags_list else reason) or "SSL Blacklist"
+        raw = (
+            f"SSL Blacklist: Malicious SSL certificate detected. "
+            f"SHA1: {sha1}. Subject CN: {cn}. Issuer: {issuer}. "
+            f"Reason: {reason}. Tags: {', '.join(str(t) for t in tags_list)}. "
+            f"Listed: {item.get('listing_date', '')}. "
+            f"Valid until: {item.get('not_after', '')}."
+        )
+        report = ThreatReport(
+            source_feed="sslbl",
+            source_id=source_id,
+            threat_actor=malware,
+            confidence_score=85,
+            raw_source=raw[:2000],
+            summary=f"Malicious SSL cert ({reason}) for {cn} issued by {issuer}.",
+        )
+        db.add(report)
+        db.flush()
+        db.add(IOC(report_id=report.id, ioc_type="hash_sha1",
+                   value=sha1, malware_family=malware, tags=tags_list))
+        saved += 1
+    db.commit()
+    return saved
+
+
+def _process_openphish(db: Session, items: list) -> int:
+    """OpenPhish — community phishing URL feed."""
+    import re
+    from urllib.parse import urlparse
+    _IP_RE = re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
+    saved = 0
+    for item in items:
+        url_val   = str(item.get("url", "") or "").strip()
+        source_id = f"openphish_{item.get('id', '')}"
+        if not url_val or db.query(ThreatReport).filter_by(source_id=source_id).first():
+            continue
+        try:
+            host = urlparse(url_val).hostname or ""
+        except Exception:
+            host = ""
+        raw = (
+            f"OpenPhish phishing URL: {url_val}. "
+            f"Host: {host}. "
+            f"This URL has been confirmed as an active phishing site by the OpenPhish community feed."
+        )
+        report = ThreatReport(
+            source_feed="openphish",
+            source_id=source_id,
+            threat_actor="Unknown",
+            confidence_score=75,
+            raw_source=raw[:2000],
+            summary=f"Confirmed phishing URL targeting {host}.",
+        )
+        db.add(report)
+        db.flush()
+        db.add(IOC(report_id=report.id, ioc_type="url",
+                   value=url_val[:512], malware_family="Phishing", tags=["phishing"]))
+        if host:
+            host_type = "ip" if _IP_RE.match(host) else "domain"
+            db.add(IOC(report_id=report.id, ioc_type=host_type,
+                       value=host[:512], malware_family="Phishing", tags=["phishing"]))
+        saved += 1
+    db.commit()
+    return saved
+
+
+def _process_dshield(db: Session, items: list) -> int:
+    """DShield/SANS ISC — top attacking source IPs."""
+    import re
+    _IP_RE = re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
+    saved = 0
+    for item in items:
+        ip = str(item.get("ipv4") or item.get("ip") or "").strip()
+        if not ip or not _IP_RE.match(ip):
+            continue
+        source_id = f"dshield_{ip}"
+        if db.query(ThreatReport).filter_by(source_id=source_id).first():
+            continue
+        attacks  = item.get("attacks") or item.get("count", 0)
+        country  = str(item.get("country", "") or "")
+        network  = str(item.get("network", "") or "")
+        asn      = str(item.get("as", "") or item.get("asname", ""))
+        raw = (
+            f"SANS ISC DShield top attacker: {ip}. "
+            f"Attack count: {attacks}. Country: {country}. "
+            f"Network: {network}. ASN: {asn}. "
+            f"This IP appears in the SANS Internet Storm Center top attacking sources list."
+        )
+        actor = f"DShield/{country}" if country else "DShield"
+        report = ThreatReport(
+            source_feed="dshield",
+            source_id=source_id,
+            threat_actor=actor,
+            confidence_score=80,
+            raw_source=raw[:2000],
+            summary=f"Top attacking IP {ip} ({country}), {attacks} attacks recorded by SANS ISC.",
+        )
+        db.add(report)
+        db.flush()
+        db.add(IOC(report_id=report.id, ioc_type="ip",
+                   value=ip, malware_family="Scanner/Attacker",
+                   tags=["scanner", "attacker", "dshield"]))
+        saved += 1
+    db.commit()
+    return saved
+
+
 _PROCESSORS = {
     "cisa_kev": _process_cisa_kev,
     "threatfox": _process_threatfox,
@@ -505,6 +697,10 @@ _PROCESSORS = {
     "rss_feeds": _process_rss,
     "cert_transparency": _process_cert_transparency,
     "github_monitor": _process_github,
+    "feodo_tracker": _process_feodo_tracker,
+    "sslbl": _process_sslbl,
+    "openphish": _process_openphish,
+    "dshield": _process_dshield,
 }
 
 

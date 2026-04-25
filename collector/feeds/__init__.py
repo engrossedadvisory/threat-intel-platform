@@ -9,6 +9,10 @@ from .darkweb_tor import DarkWebFeed
 from .cert_transparency import CertTransparencyFeed
 from .rss_feeds import SecurityRSSFeed
 from .github_monitor import GithubMonitorFeed
+from .feodo_tracker import FeodoTrackerFeed
+from .sslbl import SSLBLFeed
+from .openphish import OpenPhishFeed
+from .dshield import DShieldFeed
 
 ALL_FEEDS = [
     CISAKEVFeed(),
@@ -22,4 +26,8 @@ ALL_FEEDS = [
     CertTransparencyFeed(),
     SecurityRSSFeed(),
     GithubMonitorFeed(),
+    FeodoTrackerFeed(),
+    SSLBLFeed(),
+    OpenPhishFeed(),
+    DShieldFeed(),
 ]
