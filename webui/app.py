@@ -1295,6 +1295,30 @@ def analyst_reply(messages: list) -> str:
     )
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def ai_ioc_synopsis(ioc_type: str, ioc_value: str, malware_family: str,
+                    source_feed: str, report_summary: str, actor: str) -> str:
+    """Ask the AI for a 2–3 sentence threat synopsis for a single IOC.
+    Cached for 1 hour per unique IOC so repeated clicks are instant."""
+    prompt = (
+        "You are a threat intelligence analyst. Provide a concise 2-3 sentence "
+        "threat synopsis for the following indicator of compromise. "
+        "Cover: what the malware/threat does, how it typically operates, "
+        "and the recommended immediate defensive action. Be specific and actionable.\n\n"
+        f"IOC Type: {ioc_type}\n"
+        f"IOC Value: {ioc_value}\n"
+        f"Malware / Threat Family: {malware_family}\n"
+        f"Source Feed: {source_feed}\n"
+        + (f"Threat Actor: {actor}\n" if actor and actor != "Unknown" else "")
+        + (f"Feed Summary: {report_summary[:300]}\n" if report_summary else "")
+        + "\nSynopsis:"
+    )
+    messages = [{"role": "user", "content": prompt}]
+    reply = analyst_reply(messages)
+    # Strip leading "Synopsis:" if the model echoed it back
+    return reply.replace("Synopsis:", "").strip()
+
+
 # ─── Load data ────────────────────────────────────────────────────────────────
 reports, iocs, cves, feed_status = load_data()
 techniques_df, mitigations_df = load_attack_data()
@@ -1495,6 +1519,32 @@ if not iocs.empty:
             + '</div>',
             unsafe_allow_html=True,
         )
+
+        # ── AI synopsis ───────────────────────────────────────────────────────
+        with st.spinner("🤖 Generating AI threat synopsis…"):
+            _synopsis = ai_ioc_synopsis(
+                ioc_type       = _sel_type,
+                ioc_value      = _sel_val,
+                malware_family = _sel_fam,
+                source_feed    = _sel_feed,
+                report_summary = _sel_report_summary,
+                actor          = _sel_report_actor,
+            )
+        if _synopsis and not _synopsis.startswith("⚠️"):
+            st.markdown(
+                '<div style="background:rgba(56,189,248,0.06);border:1px solid #38bdf822;'
+                'border-left:3px solid #38bdf8;border-radius:6px;'
+                'padding:10px 16px;margin-top:4px">'
+                '<div style="font-size:0.68rem;color:#3d5a80;text-transform:uppercase;'
+                'letter-spacing:0.08em;margin-bottom:5px">'
+                '<i class="bi bi-cpu-fill" style="color:#38bdf8"></i>&nbsp; AI Threat Synopsis</div>'
+                '<div style="font-size:0.82rem;color:#8aa0c0;line-height:1.65">'
+                + _synopsis +
+                '</div></div>',
+                unsafe_allow_html=True,
+            )
+        elif _synopsis.startswith("⚠️"):
+            st.caption(_synopsis)
 
 # ─── Top KPI strip ────────────────────────────────────────────────────────────
 k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
