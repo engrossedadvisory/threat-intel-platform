@@ -575,18 +575,42 @@ def get_engine():
     return create_engine(_DB_URL, pool_pre_ping=True)
 
 
+_DEPRECATED_FEEDS = ("urlhaus", "threatfox")
+
 @st.cache_data(ttl=15)
 def load_data():
     engine = get_engine()
     try:
+        # Exclude permanently removed feeds
+        _excl = ",".join("'" + f + "'" for f in _DEPRECATED_FEEDS)
         reports = pd.read_sql(
-            "SELECT * FROM threat_reports ORDER BY created_at DESC LIMIT 500", engine
+            "SELECT * FROM threat_reports "
+            "WHERE source_feed NOT IN (" + _excl + ") "
+            "ORDER BY created_at DESC LIMIT 500",
+            engine,
         )
-        iocs = pd.read_sql("SELECT * FROM iocs ORDER BY id DESC LIMIT 5000", engine)
+        # Only load IOCs that carry meaningful context:
+        # must have a malware_family OR non-empty tags, and belong to a kept feed
+        iocs = pd.read_sql(
+            "SELECT i.* FROM iocs i "
+            "JOIN threat_reports tr ON i.report_id = tr.id "
+            "WHERE tr.source_feed NOT IN (" + _excl + ") "
+            "  AND ("
+            "    (i.malware_family IS NOT NULL AND i.malware_family <> '') "
+            "    OR (i.tags IS NOT NULL AND i.tags::text NOT IN ('[]','null','\"\"','')) "
+            "  ) "
+            "ORDER BY i.id DESC LIMIT 5000",
+            engine,
+        )
         cves = pd.read_sql(
             "SELECT * FROM cve_records ORDER BY created_at DESC LIMIT 500", engine
         )
-        feed_status = pd.read_sql("SELECT * FROM feed_status ORDER BY feed_name", engine)
+        feed_status = pd.read_sql(
+            "SELECT * FROM feed_status "
+            "WHERE feed_name NOT IN (" + _excl + ") "
+            "ORDER BY feed_name",
+            engine,
+        )
         return reports, iocs, cves, feed_status
     except Exception as exc:
         st.error(f"Database error: {exc}")
@@ -1384,15 +1408,14 @@ with k7: st.metric("⚑ Open Alerts",   f"{open_hits:,}")
 st.divider()
 
 # ─── Tabs ─────────────────────────────────────────────────────────────────────
-(tab_dash, tab_feed, tab_actors, tab_iocs,
+(tab_dash, tab_advisor, tab_feed, tab_actors, tab_iocs,
  tab_cves, tab_attack, tab_analyst, tab_darkweb,
  tab_watchlist, tab_alerts, tab_campaigns,
- tab_advisor, tab_health, tab_admin) = st.tabs([
-    "◈  Dashboard",    "◉  Threat Feed",  "⬡  Actors",
-    "⊙  IOC Hunt",     "◆  CVE Tracker",  "⬢  ATT&CK",
-    "⊕  AI Analyst",   "◉  Dark Web",
-    "⚑  Watchlist",   "🔔  Alerts",       "🎯  Campaigns",
-    "🧠  Threat Advisor",
+ tab_health, tab_admin) = st.tabs([
+    "◈  Dashboard",    "🧠  Threat Advisor",  "◉  Threat Feed",
+    "⬡  Actors",       "⊙  IOC Hunt",         "◆  CVE Tracker",
+    "⬢  ATT&CK",       "⊕  AI Analyst",        "◉  Dark Web",
+    "⚑  Watchlist",   "🔔  Alerts",            "🎯  Campaigns",
     "◎  Feed Health",  "⚙  Admin",
 ])
 
@@ -3949,6 +3972,333 @@ with tab_advisor:
             st.caption("Lockheed Martin Cyber Kill Chain — mapped from MITRE ATT&CK TTPs")
         else:
             st.info("Kill chain mapping populates as AI enrichment processes reports and extracts TTPs.")
+    else:
+        st.info("No threat data yet.")
+
+    st.divider()
+
+    # ── MITRE ATT&CK Mitigation Playbook ─────────────────────────────────────
+    st.markdown("#### 🛡 MITRE ATT&CK Mitigation Playbook")
+    st.markdown(
+        '<p style="font-size:0.8rem;color:#6e7fa3">Defensive controls mapped to '
+        'TTPs observed across all active threat reports. '
+        'Prioritised by observation frequency.</p>',
+        unsafe_allow_html=True,
+    )
+
+    try:
+        _mit_engine = get_engine()
+        _mit_sql = """
+            SELECT m.mitigation_id, m.name, m.description,
+                   COUNT(DISTINCT r.id) AS report_count,
+                   ARRAY_AGG(DISTINCT r.threat_actor) FILTER (WHERE r.threat_actor IS NOT NULL
+                       AND r.threat_actor <> 'Unknown') AS actors
+            FROM mitre_mitigations m
+            JOIN mitre_ttp_mitigations tm ON tm.mitigation_id = m.id
+            JOIN (
+                SELECT r.id, r.threat_actor,
+                       UNNEST(r.ttps) AS ttp_id
+                FROM threat_reports r
+                WHERE r.created_at > NOW() - INTERVAL '14 days'
+            ) r ON r.ttp_id = tm.ttp_id
+            GROUP BY m.mitigation_id, m.name, m.description
+            ORDER BY report_count DESC
+            LIMIT 12
+        """
+        _mit_df = pd.read_sql(_mit_sql, _mit_engine)
+    except Exception as _me:
+        _mit_df = pd.DataFrame()
+
+    if _mit_df.empty:
+        # Fallback: show generic top mitigations based on observed TTP prefixes
+        _obs_ttps: list = []
+        if not reports.empty:
+            for _tv in reports["ttps"].dropna():
+                if isinstance(_tv, list):
+                    _obs_ttps.extend(_tv)
+
+        _GENERIC_MITS = {
+            "M1049": ("Antivirus/Antimalware", "Deploy and maintain endpoint antivirus with up-to-date signatures and behavioural detection."),
+            "M1031": ("Network Intrusion Prevention", "Use network IDS/IPS to detect and block malicious network traffic patterns."),
+            "M1050": ("Exploit Protection", "Enable OS-level exploit mitigations (ASLR, DEP, CFG). Use application whitelisting."),
+            "M1035": ("Limit Access to Resource Over Network", "Apply network segmentation and restrict unnecessary lateral movement paths."),
+            "M1017": ("User Training", "Conduct phishing awareness training and regular security awareness programmes."),
+            "M1041": ("Encrypt Sensitive Information", "Encrypt data at rest and in transit. Enforce TLS 1.2+ across all services."),
+            "M1026": ("Privileged Account Management", "Implement least-privilege. Audit privileged accounts. Enforce PAM solutions."),
+            "M1032": ("Multi-factor Authentication", "Require MFA on all externally-facing services and privileged interfaces."),
+            "M1030": ("Network Segmentation", "Segment networks to contain lateral movement. Enforce micro-segmentation where possible."),
+            "M1021": ("Restrict Web-Based Content", "Block access to malicious domains. Enforce category-based web filtering."),
+        }
+        _ttp_mit_map = {
+            "T1566": ["M1049","M1017","M1021"],
+            "T1190": ["M1050","M1030","M1031"],
+            "T1059": ["M1049","M1050","M1026"],
+            "T1486": ["M1041","M1053","M1049"],
+            "T1071": ["M1031","M1030","M1021"],
+            "T1041": ["M1031","M1041","M1030"],
+            "T1055": ["M1049","M1050","M1026"],
+            "T1078": ["M1032","M1026","M1017"],
+        }
+        _mit_scores: dict = {}
+        for _ot in _obs_ttps:
+            for _prefix, _mits in _ttp_mit_map.items():
+                if str(_ot).startswith(_prefix):
+                    for _m in _mits:
+                        _mit_scores[_m] = _mit_scores.get(_m, 0) + 1
+        _sorted_mits = sorted(_mit_scores.items(), key=lambda x: x[1], reverse=True)[:8]
+        if not _sorted_mits and _GENERIC_MITS:
+            _sorted_mits = [(k, 0) for k in list(_GENERIC_MITS.keys())[:6]]
+
+        if _sorted_mits:
+            _mc1, _mc2 = st.columns(2)
+            for _mi_idx, (_mid, _mcount) in enumerate(_sorted_mits):
+                _mname, _mdesc = _GENERIC_MITS.get(_mid, (_mid, "See MITRE ATT&CK for details."))
+                _col = _mc1 if _mi_idx % 2 == 0 else _mc2
+                with _col:
+                    st.markdown(
+                        '<div style="background:rgba(6,214,160,0.05);border:1px solid #06d6a022;'
+                        'border-left:3px solid #06d6a0;border-radius:6px;padding:10px 14px;'
+                        'margin-bottom:8px">'
+                        '<div style="display:flex;justify-content:space-between">'
+                        '<span style="font-size:0.8rem;font-weight:700;color:#06d6a0">'
+                        + _mid + ' — ' + _mname + '</span>'
+                        + (
+                            '<span style="font-size:0.7rem;color:#3d5a80;background:#0a1428;'
+                            'border-radius:3px;padding:1px 6px">' +
+                            str(_mcount) + ' obs</span>' if _mcount > 0 else ''
+                        ) +
+                        '</div>'
+                        '<div style="font-size:0.75rem;color:#6e7fa3;margin-top:4px;line-height:1.5">'
+                        + _mdesc + '</div>'
+                        '</div>',
+                        unsafe_allow_html=True,
+                    )
+        else:
+            st.info("Mitigation playbook populates once threat feeds have collected TTPs.")
+    else:
+        _mc1, _mc2 = st.columns(2)
+        for _mi_idx, (_, _mrow) in enumerate(_mit_df.iterrows()):
+            _col = _mc1 if _mi_idx % 2 == 0 else _mc2
+            _mactors = [a for a in (_mrow.get("actors") or []) if a][:3]
+            _mactor_str = ", ".join(_mactors) if _mactors else ""
+            with _col:
+                st.markdown(
+                    '<div style="background:rgba(6,214,160,0.05);border:1px solid #06d6a022;'
+                    'border-left:3px solid #06d6a0;border-radius:6px;padding:10px 14px;'
+                    'margin-bottom:8px">'
+                    '<div style="display:flex;justify-content:space-between">'
+                    '<span style="font-size:0.8rem;font-weight:700;color:#06d6a0">'
+                    + str(_mrow["mitigation_id"]) + ' — ' + str(_mrow["name"]) + '</span>'
+                    '<span style="font-size:0.7rem;color:#3d5a80;background:#0a1428;'
+                    'border-radius:3px;padding:1px 6px">'
+                    + str(int(_mrow["report_count"])) + ' reports</span>'
+                    '</div>'
+                    '<div style="font-size:0.75rem;color:#6e7fa3;margin-top:4px;line-height:1.5">'
+                    + str(_mrow["description"])[:220] + ('…' if len(str(_mrow["description"])) > 220 else '') +
+                    '</div>'
+                    + (
+                        '<div style="font-size:0.7rem;color:#ff8c42;margin-top:3px">⚡ ' + _mactor_str + '</div>'
+                        if _mactor_str else ''
+                    ) +
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+
+    st.divider()
+
+    # ── Cross-Feed Threat Correlation ─────────────────────────────────────────
+    st.markdown("#### 🔗 Cross-Feed Threat Correlation")
+    st.markdown(
+        '<p style="font-size:0.8rem;color:#6e7fa3">Threat actors and malware families '
+        'observed across multiple independent feeds — highest-confidence signals.</p>',
+        unsafe_allow_html=True,
+    )
+
+    if not reports.empty and "threat_actor" in reports.columns and "source_feed" in reports.columns:
+        _xfeed_df = (
+            reports[
+                reports["threat_actor"].notna() &
+                (reports["threat_actor"] != "") &
+                (reports["threat_actor"] != "Unknown")
+            ]
+            .groupby("threat_actor")["source_feed"]
+            .apply(lambda x: sorted(set(x)))
+            .reset_index()
+        )
+        _xfeed_df.columns = ["threat_actor", "feeds"]
+        _xfeed_df["feed_count"] = _xfeed_df["feeds"].apply(len)
+        _xfeed_multi = _xfeed_df[_xfeed_df["feed_count"] >= 2].sort_values("feed_count", ascending=False).head(10)
+
+        if not _xfeed_multi.empty:
+            _xf_c1, _xf_c2 = st.columns([3, 2])
+            with _xf_c1:
+                _fig_xf = px.bar(
+                    _xfeed_multi, x="feed_count", y="threat_actor",
+                    orientation="h",
+                    color="feed_count",
+                    color_continuous_scale=[[0,"#0d1a30"],[0.5,"#38bdf8"],[1,"#06d6a0"]],
+                    labels={"threat_actor": "", "feed_count": "Feeds Corroborating"},
+                    title="Multi-Feed Corroboration",
+                )
+                _fig_xf.update_coloraxes(showscale=False)
+                _fig_xf.update_layout(**_PLOTLY_DARK, height=300, yaxis=dict(autorange="reversed"))
+                _fig_xf.update_layout(clickmode="event+select")
+                _xf_sel = st.plotly_chart(_fig_xf, on_select="rerun",
+                                           use_container_width=True, key="xfeed_bar")
+                _drill_xf = None
+                if _xf_sel and _xf_sel.selection and _xf_sel.selection.points:
+                    _drill_xf = _xf_sel.selection.points[0].get("y")
+
+            with _xf_c2:
+                if _drill_xf:
+                    _xf_row = _xfeed_multi[_xfeed_multi["threat_actor"] == _drill_xf]
+                    if not _xf_row.empty:
+                        _xf_feeds = _xf_row.iloc[0]["feeds"]
+                        _xf_cnt   = _xf_row.iloc[0]["feed_count"]
+                        st.markdown(
+                            '<div class="metric-card" style="border-left:3px solid #38bdf8">'
+                            '<b style="color:#c8d8f0;font-size:0.95rem">' + str(_drill_xf) + '</b><br>'
+                            '<span style="font-size:0.7rem;color:#38bdf8">'
+                            + str(_xf_cnt) + ' independent feeds confirm this actor</span><br><br>'
+                            + "".join(
+                                '<div style="font-size:0.75rem;color:#6e7fa3;padding:2px 0">'
+                                '✓ ' + f + '</div>' for f in _xf_feeds
+                            ) +
+                            '</div>',
+                            unsafe_allow_html=True,
+                        )
+                        _xf_rpts = reports[reports["threat_actor"] == _drill_xf]
+                        _xf_ioc_df = iocs[iocs["report_id"].isin(_xf_rpts["id"])] if not iocs.empty else pd.DataFrame()
+                        if not _xf_ioc_df.empty:
+                            _xf_show = [c for c in ["ioc_type","value","malware_family","tags"] if c in _xf_ioc_df.columns]
+                            st.dataframe(_xf_ioc_df[_xf_show].head(8), use_container_width=True, hide_index=True)
+                else:
+                    st.markdown(
+                        '<div class="metric-card" style="text-align:center;padding:24px">'
+                        '<div style="font-size:2rem">🔗</div>'
+                        '<div style="font-size:0.8rem;color:#3d5a80;margin-top:8px">'
+                        'Click a bar to see which feeds corroborate the actor and matched IOCs'
+                        '</div></div>',
+                        unsafe_allow_html=True,
+                    )
+        else:
+            st.info(
+                "Cross-feed correlation requires threat actors seen across ≥2 feeds. "
+                "More data will appear as feeds run."
+            )
+
+    else:
+        st.info("Threat data is still loading.")
+
+    st.divider()
+
+    # ── AI-Generated Threat Actor Profiles ───────────────────────────────────
+    st.markdown("#### 🤖 AI-Generated Threat Actor Profiles")
+    st.markdown(
+        '<p style="font-size:0.8rem;color:#6e7fa3">On-demand AI profiles for the most '
+        'active actors seen in your feeds. Includes attribution, TTPs, and sector targeting.</p>',
+        unsafe_allow_html=True,
+    )
+
+    if not reports.empty and "threat_actor" in reports.columns:
+        _top_actors_for_profile = (
+            reports[
+                reports["threat_actor"].notna() &
+                (reports["threat_actor"] != "") &
+                (reports["threat_actor"] != "Unknown")
+            ]
+            .groupby("threat_actor")["id"]
+            .count()
+            .sort_values(ascending=False)
+            .head(6)
+            .index.tolist()
+        )
+
+        if _top_actors_for_profile:
+            _prof_sel = st.selectbox(
+                "Select actor to profile:",
+                ["— choose —"] + _top_actors_for_profile,
+                key="actor_profile_select",
+            )
+            if _prof_sel and _prof_sel != "— choose —":
+                _ap_rpts = reports[reports["threat_actor"] == _prof_sel]
+                _ap_feeds = sorted(set(_ap_rpts["source_feed"].dropna()))
+                _ap_ttps_raw: list = []
+                for _tv in _ap_rpts["ttps"].dropna():
+                    if isinstance(_tv, list):
+                        _ap_ttps_raw.extend(_tv)
+                _ap_ttps_unique = sorted(set(_ap_ttps_raw))[:10]
+
+                _ap_col1, _ap_col2 = st.columns([1, 2])
+                with _ap_col1:
+                    st.markdown(
+                        '<div class="metric-card">'
+                        '<div style="font-size:1.1rem;font-weight:700;color:#c084fc">' + _prof_sel + '</div>'
+                        '<div style="font-size:0.75rem;color:#6e7fa3;margin-top:6px">Reports: <b style="color:#c8d8f0">' + str(len(_ap_rpts)) + '</b></div>'
+                        '<div style="font-size:0.75rem;color:#6e7fa3">Feeds: <b style="color:#c8d8f0">' + ", ".join(_ap_feeds[:3]) + '</b></div>'
+                        '<div style="font-size:0.75rem;color:#6e7fa3;margin-top:6px"><b>TTPs observed:</b></div>'
+                        + "".join('<div style="font-size:0.72rem;color:#818cf8;padding:1px 0">• ' + t + '</div>' for t in _ap_ttps_unique) +
+                        '</div>',
+                        unsafe_allow_html=True,
+                    )
+                with _ap_col2:
+                    # Try to load cached profile from asset_threat_profiles
+                    _cached_profile = None
+                    if not _profiles_df.empty:
+                        # Check if any asset's ai_assessment mentions this actor
+                        _actor_lower = _prof_sel.lower()
+                        for _, _pr in _profiles_df.iterrows():
+                            _actors_list = _pr.get("matched_actors") or []
+                            if any(_actor_lower in str(a).lower() for a in _actors_list):
+                                _cached_profile = str(_pr.get("ai_assessment") or "")
+                                break
+
+                    if _cached_profile:
+                        st.markdown(
+                            '<div style="background:rgba(192,132,252,0.06);border:1px solid #7c3aed33;'
+                            'border-radius:8px;padding:12px 16px">'
+                            '<div style="font-size:0.7rem;color:#6e7fa3;margin-bottom:6px">🤖 AI Assessment (cached)</div>'
+                            '<div style="font-size:0.82rem;color:#8aa0c0;line-height:1.6">'
+                            + _cached_profile[:800] + ('…' if len(_cached_profile) > 800 else '') +
+                            '</div></div>',
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        # Show what we know from data
+                        _ap_malware = sorted(set(
+                            str(m) for m in _ap_rpts["malware_family"].dropna()
+                            if m and m != "Unknown"
+                        ))[:5] if "malware_family" in _ap_rpts.columns else []
+
+                        _ap_countries = sorted(set(
+                            str(c) for c in _ap_rpts.get("geo_country", pd.Series()).dropna()
+                            if c
+                        ))[:4] if "geo_country" in _ap_rpts.columns else []
+
+                        st.markdown(
+                            '<div style="background:rgba(192,132,252,0.06);border:1px solid #7c3aed33;'
+                            'border-radius:8px;padding:12px 16px">'
+                            '<div style="font-size:0.7rem;color:#6e7fa3;margin-bottom:6px">📊 Intelligence Summary</div>'
+                            + (
+                                '<div style="font-size:0.78rem;color:#8aa0c0;margin-bottom:4px">'
+                                '<b style="color:#c084fc">Malware families:</b> ' + ", ".join(_ap_malware) + '</div>'
+                                if _ap_malware else ''
+                            )
+                            + (
+                                '<div style="font-size:0.78rem;color:#8aa0c0;margin-bottom:4px">'
+                                '<b style="color:#c084fc">Victim countries:</b> ' + ", ".join(_ap_countries) + '</div>'
+                                if _ap_countries else ''
+                            )
+                            + '<div style="font-size:0.78rem;color:#6e7fa3;margin-top:8px">'
+                            '💡 Add assets to the Watchlist and click <b>Research Now</b> to generate '
+                            'a full AI-written profile with attribution, impact assessment, and '
+                            'sector-specific mitigations for this actor.'
+                            '</div>'
+                            '</div>',
+                            unsafe_allow_html=True,
+                        )
+        else:
+            st.info("No named threat actors in current data — feeds are collecting.")
     else:
         st.info("No threat data yet.")
 
