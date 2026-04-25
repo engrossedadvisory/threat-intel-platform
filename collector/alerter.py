@@ -12,29 +12,13 @@ from email.mime.text import MIMEText
 from typing import Any, Optional
 
 import requests
-from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime
 from sqlalchemy.orm import Session
 
-from models import Base, engine as _engine
+from models import AlertChannel
 
 log = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = 10  # seconds
-
-
-# ─── alert_channels table ─────────────────────────────────────────────────────
-
-class AlertChannel(Base):
-    __tablename__ = "alert_channels"
-    id         = Column(Integer, primary_key=True, index=True)
-    name       = Column(String(100))               # e.g. "Slack #soc-alerts"
-    channel_type = Column(String(20), index=True)  # slack | teams | email
-    config     = Column(Text)                       # JSON-encoded config blob
-    enabled    = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-
-Base.metadata.create_all(bind=_engine, tables=[AlertChannel.__table__])
 
 
 # ─── Colour helpers ───────────────────────────────────────────────────────────
@@ -64,8 +48,8 @@ def _send_slack(webhook_url: str, hit_row: Any, asset_row: Any) -> bool:
     severity = getattr(hit_row, "severity", "medium").lower()
     color    = _SEVERITY_COLOUR.get(severity, "#FFCC00")
     ts_str   = (
-        hit_row.hit_at.strftime("%Y-%m-%d %H:%M UTC")
-        if hasattr(hit_row, "hit_at") and hit_row.hit_at
+        hit_row.found_at.strftime("%Y-%m-%d %H:%M UTC")
+        if hasattr(hit_row, "found_at") and hit_row.found_at
         else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     )
 
@@ -91,7 +75,7 @@ def _send_slack(webhook_url: str, hit_row: Any, asset_row: Any) -> bool:
                             },
                             {
                                 "type": "mrkdwn",
-                                "text": f"*Matched Value:*\n`{getattr(hit_row, 'ioc_value', 'Unknown')}`",
+                                "text": f"*Matched Value:*\n`{getattr(hit_row, 'matched_value', 'Unknown')}`",
                             },
                             {
                                 "type": "mrkdwn",
@@ -115,7 +99,7 @@ def _send_slack(webhook_url: str, hit_row: Any, asset_row: Any) -> bool:
                 "fallback": (
                     f"VANTELLIGENCE Watchlist Hit — "
                     f"Asset: {getattr(asset_row, 'value', '?')} | "
-                    f"IOC: {getattr(hit_row, 'ioc_value', '?')} | "
+                    f"IOC: {getattr(hit_row, 'matched_value', '?')} | "
                     f"Severity: {severity.upper()}"
                 ),
             }
@@ -142,8 +126,8 @@ def _send_teams(webhook_url: str, hit_row: Any, asset_row: Any) -> bool:
     severity = getattr(hit_row, "severity", "medium").lower()
     color    = _SEVERITY_TEAMS_COLOUR.get(severity, "accent")
     ts_str   = (
-        hit_row.hit_at.strftime("%Y-%m-%d %H:%M UTC")
-        if hasattr(hit_row, "hit_at") and hit_row.hit_at
+        hit_row.found_at.strftime("%Y-%m-%d %H:%M UTC")
+        if hasattr(hit_row, "found_at") and hit_row.found_at
         else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     )
 
@@ -172,7 +156,7 @@ def _send_teams(webhook_url: str, hit_row: Any, asset_row: Any) -> bool:
                             "type": "FactSet",
                             "facts": [
                                 _fact("Asset",         getattr(asset_row, "value", "Unknown")),
-                                _fact("Matched Value", getattr(hit_row, "ioc_value", "Unknown")),
+                                _fact("Matched Value", getattr(hit_row, "matched_value", "Unknown")),
                                 _fact("Source Feed",   getattr(hit_row, "source_feed", "Unknown")),
                                 _fact("Severity",      severity.upper()),
                                 _fact("Hit Type",      getattr(hit_row, "hit_type", "ioc_match")),
@@ -206,14 +190,14 @@ def _send_email(config: dict, hit_row: Any, asset_row: Any) -> bool:
     severity = getattr(hit_row, "severity", "medium").lower()
     colour   = _SEVERITY_COLOUR.get(severity, "#FFCC00")
     ts_str   = (
-        hit_row.hit_at.strftime("%Y-%m-%d %H:%M UTC")
-        if hasattr(hit_row, "hit_at") and hit_row.hit_at
+        hit_row.found_at.strftime("%Y-%m-%d %H:%M UTC")
+        if hasattr(hit_row, "found_at") and hit_row.found_at
         else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     )
 
     rows = [
         ("Asset",         getattr(asset_row, "value", "Unknown")),
-        ("Matched Value", getattr(hit_row, "ioc_value", "Unknown")),
+        ("Matched Value", getattr(hit_row, "matched_value", "Unknown")),
         ("Source Feed",   getattr(hit_row, "source_feed", "Unknown")),
         ("Severity",      severity.upper()),
         ("Hit Type",      getattr(hit_row, "hit_type", "ioc_match")),
@@ -284,18 +268,14 @@ def send_alert(hit_row: Any, asset_row: Any, db: Session) -> int:
     Send an alert for a watchlist hit via all active configured channels.
     Returns the number of channels that successfully delivered.
     """
-    channels = db.query(AlertChannel).filter_by(enabled=True).all()
+    channels = db.query(AlertChannel).filter_by(active=True).all()
     if not channels:
         log.debug("[alerter] No active alert channels configured.")
         return 0
 
     delivered = 0
     for channel in channels:
-        try:
-            cfg = json.loads(channel.config or "{}")
-        except json.JSONDecodeError:
-            log.warning(f"[alerter] Invalid JSON config for channel id={channel.id} — skipping.")
-            continue
+        cfg = channel.config or {}
 
         success = False
         ctype = (channel.channel_type or "").lower()
@@ -334,23 +314,12 @@ def process_pending_alerts(db: Session) -> int:
     via all active channels.  Marks each hit as alerted after successful delivery.
     Returns the number of hits processed.
     """
-    try:
-        from watchlist_checker import WatchlistHit
-    except ImportError:
-        log.error("[alerter] Cannot import WatchlistHit — is watchlist_checker.py present?")
-        return 0
-
-    try:
-        from models import Base as _Base
-        # Dynamically look up watched_assets for the asset_row
-        from sqlalchemy import text as _text
-    except ImportError:
-        pass
+    from models import WatchlistHit, WatchedAsset
 
     pending = (
         db.query(WatchlistHit)
         .filter_by(alerted=False)
-        .order_by(WatchlistHit.hit_at.asc())
+        .order_by(WatchlistHit.found_at.asc())
         .limit(100)
         .all()
     )
@@ -365,10 +334,9 @@ def process_pending_alerts(db: Session) -> int:
     for hit in pending:
         try:
             # Look up the watched asset for context
-            from watchlist_checker import WatchedAsset
-            asset = db.query(WatchedAsset).filter_by(id=hit.asset_id).first()
+            asset = db.query(WatchedAsset).filter_by(id=hit.watched_asset_id).first()
             if not asset:
-                log.warning(f"[alerter] Asset id={hit.asset_id} not found — skipping hit id={hit.id}")
+                log.warning(f"[alerter] Asset id={hit.watched_asset_id} not found — skipping hit id={hit.id}")
                 hit.alerted = True
                 db.commit()
                 continue
