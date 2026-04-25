@@ -1423,18 +1423,26 @@ if not iocs.empty:
         "malware_family": "Malware / Family", "tags": "Tags",
     })
 
-    # ── Row header: label + clear button ─────────────────────────────────────
-    _tbl_col1, _tbl_col2 = st.columns([6, 1])
+    # ── Row header: select-all checkbox + label + clear button ───────────────
+    _tbl_col0, _tbl_col1, _tbl_col2 = st.columns([1, 5, 1])
+    with _tbl_col0:
+        _select_all = st.checkbox(
+            "All",
+            key="ticker_select_all",
+            help="Select all IOCs",
+            value=st.session_state.get("ticker_select_all", False),
+        )
     with _tbl_col1:
         st.markdown(
             '<p style="font-size:0.72rem;color:#3d5a80;text-transform:uppercase;'
-            'letter-spacing:0.08em;margin:0 0 2px 0">'
+            'letter-spacing:0.08em;margin:6px 0 2px 0">'
             '<i class="bi bi-table"></i>&nbsp; Click a row to drill down</p>',
             unsafe_allow_html=True,
         )
     with _tbl_col2:
-        if st.button("⟳ Clear", key="clear_ticker_sel", help="Clear selected IOC"):
+        if st.button("⟳ Clear", key="clear_ticker_sel", help="Clear selection"):
             st.session_state["ticker_drill_ver"] = st.session_state.get("ticker_drill_ver", 0) + 1
+            st.session_state["ticker_select_all"] = False
             st.rerun()
 
     _ticker_sel = st.dataframe(
@@ -1443,7 +1451,7 @@ if not iocs.empty:
         hide_index=True,
         height=130,
         on_select="rerun",
-        selection_mode="single-row",
+        selection_mode="multi-row",
         key=f"ticker_drill_{st.session_state.get('ticker_drill_ver', 0)}",
         column_config={
             "Type":              st.column_config.TextColumn(width="small"),
@@ -1454,12 +1462,41 @@ if not iocs.empty:
     )
 
     # ── Drill-down panel (appears below table on row click) ───────────────────
-    _ticker_sel_rows = (
+    _raw_sel_rows = (
         _ticker_sel.selection.rows
         if _ticker_sel and hasattr(_ticker_sel, "selection")
         else []
     )
-    if _ticker_sel_rows:
+    # "Select All" overrides individual row clicks
+    _ticker_sel_rows = (
+        list(range(len(_drill_display)))
+        if st.session_state.get("ticker_select_all")
+        else _raw_sel_rows
+    )
+
+    # ── Multi-row summary panel ───────────────────────────────────────────────
+    if len(_ticker_sel_rows) > 1:
+        _multi_iocs = _ticker_iocs.iloc[_ticker_sel_rows]
+        _type_counts = _multi_iocs["ioc_type"].value_counts().to_dict() if "ioc_type" in _multi_iocs.columns else {}
+        _feed_counts = (_multi_iocs.get("source_feed") or _multi_iocs.get("feed", "")).value_counts().to_dict() if ("source_feed" in _multi_iocs.columns or "feed" in _multi_iocs.columns) else {}
+        _fam_counts  = _multi_iocs["malware_family"].value_counts().head(5).to_dict() if "malware_family" in _multi_iocs.columns else {}
+        _type_str    = " &nbsp;|&nbsp; ".join(f'<span style="color:#38bdf8">{k}</span> <span style="color:#6e7fa3">{v}</span>' for k, v in _type_counts.items())
+        _fam_str     = " &nbsp;|&nbsp; ".join(f'<span style="color:#c084fc">{k}</span>' for k in _fam_counts.keys()) if _fam_counts else "—"
+        st.markdown(
+            f'<div style="background:rgba(6,214,160,0.04);border:1px solid #06d6a022;'
+            f'border-left:4px solid #06d6a0;border-radius:6px;padding:10px 16px;margin:4px 0 8px 0">'
+            f'<div style="display:flex;gap:24px;flex-wrap:wrap;align-items:center">'
+            f'<div><div style="font-size:0.7rem;color:#3d5a80;text-transform:uppercase;letter-spacing:0.08em">Selected</div>'
+            f'<div style="font-size:1.1rem;color:#06d6a0;font-weight:700">{len(_ticker_sel_rows)}</div></div>'
+            f'<div><div style="font-size:0.7rem;color:#3d5a80;text-transform:uppercase;letter-spacing:0.08em">By Type</div>'
+            f'<div style="font-size:0.82rem">{_type_str}</div></div>'
+            f'<div style="flex:1;min-width:200px"><div style="font-size:0.7rem;color:#3d5a80;text-transform:uppercase;letter-spacing:0.08em">Top Families</div>'
+            f'<div style="font-size:0.82rem">{_fam_str}</div></div>'
+            f'</div></div>',
+            unsafe_allow_html=True,
+        )
+
+    elif _ticker_sel_rows:
         _sel_idx  = _ticker_sel_rows[0]
         _sel_ioc  = _ticker_iocs.iloc[_sel_idx]
         _sel_val  = str(_sel_ioc.get("value", ""))
