@@ -14,33 +14,13 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import requests
-from sqlalchemy import Column, Integer, String, Text, Float, DateTime
 from sqlalchemy.orm import Session
 
-from models import Base, IOC, SessionLocal
+from models import IOC, IOCEnrichment, SessionLocal
 
 log = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = 10  # seconds
-
-
-# ─── ioc_enrichments table ────────────────────────────────────────────────────
-
-class IOCEnrichment(Base):
-    __tablename__ = "ioc_enrichments"
-    id         = Column(Integer, primary_key=True, index=True)
-    ioc_value  = Column(String(512), index=True)
-    ioc_type   = Column(String(50))
-    source     = Column(String(50), index=True)       # virustotal | greynoise | shodan
-    score      = Column(Float)                         # 0-100
-    verdict    = Column(String(50))                    # malicious | benign | noise | unknown
-    raw_data   = Column(Text)
-    enriched_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-
-# Ensure the table exists (harmless if already present)
-from models import engine as _engine
-Base.metadata.create_all(bind=_engine, tables=[IOCEnrichment.__table__])
 
 
 # ─── API key helpers ──────────────────────────────────────────────────────────
