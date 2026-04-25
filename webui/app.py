@@ -589,16 +589,11 @@ def load_data():
             "ORDER BY created_at DESC LIMIT 500",
             engine,
         )
-        # Only load IOCs that carry meaningful context:
-        # must have a malware_family OR non-empty tags, and belong to a kept feed
+        # Load all IOCs except from permanently removed feeds
         iocs = pd.read_sql(
             "SELECT i.* FROM iocs i "
             "JOIN threat_reports tr ON i.report_id = tr.id "
             "WHERE tr.source_feed NOT IN (" + _excl + ") "
-            "  AND ("
-            "    (i.malware_family IS NOT NULL AND i.malware_family <> '') "
-            "    OR (i.tags IS NOT NULL AND i.tags::text NOT IN ('[]','null','\"\"','')) "
-            "  ) "
             "ORDER BY i.id DESC LIMIT 5000",
             engine,
         )
