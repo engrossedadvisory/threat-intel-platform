@@ -235,14 +235,42 @@ def _generate_daily_briefing(db: Session,
 
 # ─── Main research cycle ──────────────────────────────────────────────────────
 
+def _is_research_requested(db: Session) -> bool:
+    """Check if the WebUI has set a research_requested flag in platform_settings."""
+    try:
+        from models import PlatformSettings
+        row = db.query(PlatformSettings).filter_by(key="research_requested").first()
+        return row is not None and str(row.value).lower() in ("1", "true", "yes")
+    except Exception:
+        return False
+
+
+def _clear_research_flag(db: Session) -> None:
+    """Clear the research_requested flag after starting a cycle."""
+    try:
+        from models import PlatformSettings
+        row = db.query(PlatformSettings).filter_by(key="research_requested").first()
+        if row:
+            row.value = "false"
+            db.commit()
+    except Exception:
+        pass
+
+
 def run_research_cycle(db: Session) -> None:
     """Assess all watched assets and generate daily briefing if not done today.
-    Called from the worker main loop every iteration — internally rate-limited."""
+    Called from the worker main loop every iteration — internally rate-limited.
+    Rate limit is bypassed when the WebUI sets research_requested=true in
+    platform_settings (triggered by the Research Now button)."""
     global _last_run, _last_daily_briefing
 
     now = time.time()
-    if now - _last_run < RESEARCH_INTERVAL:
+    on_demand = _is_research_requested(db)
+    if not on_demand and (now - _last_run < RESEARCH_INTERVAL):
         return
+    if on_demand:
+        _clear_research_flag(db)
+        log.info("[researcher] On-demand research triggered via WebUI.")
     _last_run = now
 
     log.info("[researcher] Starting threat research cycle …")

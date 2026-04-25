@@ -3394,18 +3394,108 @@ with tab_advisor:
         unsafe_allow_html=True,
     )
 
-    # ── Refresh button ────────────────────────────────────────────────────────
+    # ── Prerequisites status panel ────────────────────────────────────────────
+    _pre_feeds_ok   = not reports.empty
+    _pre_assets_ok  = not (load_watchlist_data()[0].empty if callable(load_watchlist_data) else True)
+    _pre_briefing   = not _briefing_df.empty
+    _pre_profiles   = not _profiles_df.empty
+
+    # Check AI backend availability
+    _pre_ai_ok = bool(
+        os.getenv("CLAUDE_API_KEY", "") or
+        os.getenv("GEMINI_API_KEY", "") or
+        os.getenv("OLLAMA_URL", "")
+    )
+
+    _all_good = _pre_feeds_ok and _pre_assets_ok
+
+    if not _all_good:
+        st.markdown(
+            '<div style="background:rgba(255,209,102,0.07);border:1px solid #ffd166;'
+            'border-radius:8px;padding:14px 18px;margin-bottom:12px">',
+            unsafe_allow_html=True,
+        )
+        st.markdown("**⚙ Setup Checklist** — complete these steps to activate the Threat Advisor")
+
+        def _chk(ok: bool, label: str, fix: str = ""):
+            icon  = "✅" if ok else "⬜"
+            color = "#06d6a0" if ok else "#ffd166"
+            note  = (
+                ' <span style="font-size:0.72rem;color:#3d5a80">— ' + fix + "</span>"
+                if fix and not ok else ""
+            )
+            st.markdown(
+                '<div style="font-size:0.83rem;color:' + color + ';padding:2px 0">'
+                + icon + "&nbsp; " + label + note + "</div>",
+                unsafe_allow_html=True,
+            )
+
+        _feed_count = len(reports) if not reports.empty else 0
+        _chk(_pre_feeds_ok,
+             "Threat feeds have collected data  (" + str(_feed_count) + " reports)",
+             "Feeds run automatically — check ◎ Feed Health tab for status")
+
+        try:
+            _wa_df, _ = load_watchlist_data()
+            _asset_count = len(_wa_df) if not _wa_df.empty else 0
+        except Exception:
+            _asset_count = 0
+        _chk(_asset_count > 0,
+             "Watched assets added to Watchlist  (" + str(_asset_count) + " assets)",
+             "Go to ⚑ Watchlist tab → add your domains, IPs, company names, or keywords")
+
+        _chk(_pre_ai_ok,
+             "AI backend configured  (Ollama / Claude / Gemini)",
+             "Set CLAUDE_API_KEY or GEMINI_API_KEY in .env, or run Ollama locally — "
+             "briefings generate without AI but assessments will be heuristic only")
+
+        _chk(_pre_briefing,
+             "First daily briefing generated",
+             "Happens automatically after feeds collect data — or click Research Now below")
+
+        _chk(_pre_profiles,
+             "Asset threat profiles assessed",
+             "Requires watched assets + at least one feed cycle to complete")
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # ── Research Now button ───────────────────────────────────────────────────
     _adv_col_btn, _adv_col_info = st.columns([1, 4])
     with _adv_col_btn:
         if st.button("⟳  Research Now", key="adv_refresh", type="primary"):
+            # Write a flag to platform_settings so the collector bypasses its
+            # 1-hour rate limit and runs a research cycle on next loop (≤30 s).
+            try:
+                with engine.begin() as _rc:
+                    _rc.execute(
+                        __import__("sqlalchemy").text(
+                            "INSERT INTO platform_settings (key, value, updated_by) "
+                            "VALUES ('research_requested', 'true', 'webui') "
+                            "ON CONFLICT (key) DO UPDATE SET value='true', "
+                            "updated_at=now(), updated_by='webui'"
+                        )
+                    )
+                st.success("✓ Research cycle queued — results appear within ~30 seconds. "
+                           "Refresh this tab after a moment.", icon="🔬")
+            except Exception as _re:
+                st.warning("Could not queue research: " + str(_re))
             load_threat_advisor_data.clear()
             load_org_risk_score.clear()
-            st.rerun()
+
     with _adv_col_info:
+        _last_research_str = ""
+        if not _profiles_df.empty and "last_assessed" in _profiles_df.columns:
+            try:
+                _lr = pd.to_datetime(_profiles_df["last_assessed"].max(), utc=True)
+                _last_research_str = "Last run: " + _lr.strftime("%Y-%m-%d %H:%M UTC") + " · "
+            except Exception:
+                pass
         st.markdown(
             '<span style="font-size:0.8rem;color:#3d5a80">'
-            'The AI agent automatically assesses each watched asset against live threat intel '
-            'every hour. Click <b>Research Now</b> to trigger an immediate analysis.</span>',
+            + _last_research_str +
+            'The AI agent runs automatically every hour, matching your watched assets against '
+            'all live threat feeds. <b>Research Now</b> triggers an immediate cycle '
+            '(results in ≤30 s).</span>',
             unsafe_allow_html=True,
         )
 
