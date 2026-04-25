@@ -127,11 +127,11 @@ class GithubMonitorFeed(BaseFeed):
 
         # ── Load watched keywords and domains ────────────────────────────────
         try:
-            from watchlist_checker import WatchedAsset
+            from models import WatchedAsset
             assets = (
                 db.query(WatchedAsset)
-                .filter_by(enabled=True)
-                .filter(WatchedAsset.asset_type.in_(["keyword", "domain"]))  # type: ignore[attr-defined]
+                .filter_by(active=True)
+                .filter(WatchedAsset.asset_type.in_(["keyword", "domain"]))
                 .all()
             )
             search_terms = [a.value.strip() for a in assets if a.value]

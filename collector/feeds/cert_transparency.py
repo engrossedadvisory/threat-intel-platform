@@ -52,10 +52,10 @@ class CertTransparencyFeed(BaseFeed):
     def _fetch_with_db(self, db) -> list[dict[str, Any]]:
         # ── Load watched domains from DB ──────────────────────────────────────
         try:
-            from watchlist_checker import WatchedAsset
+            from models import WatchedAsset
             assets = (
                 db.query(WatchedAsset)
-                .filter_by(enabled=True, asset_type="domain")
+                .filter_by(active=True, asset_type="domain")
                 .all()
             )
             domains = [a.value.strip().lower() for a in assets if a.value]
