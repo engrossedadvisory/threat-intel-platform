@@ -707,10 +707,40 @@ def load_feed_history() -> pd.DataFrame:
 
 @st.cache_data(ttl=3600)
 def geolocate_ips(ip_tuple: tuple) -> tuple:
-    """Batch geolocate IPs.  Returns (DataFrame, error_string)."""
-    # filter private ranges
-    public = [ip for ip in ip_tuple
-              if ip and not ip.startswith(("192.168.", "10.", "172.", "127.", "0."))][:80]
+    """Batch geolocate IPs.  Returns (DataFrame, error_string).
+
+    Accepts plain IPs, ip:port strings, and IPv6 [addr]:port notation.
+    Private/loopback addresses are silently skipped.
+    """
+    import re as _re
+    _IP_RE = _re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
+
+    def _extract_ip(raw: str) -> str:
+        raw = raw.strip()
+        # [::1]:port  IPv6
+        if raw.startswith("["):
+            return raw[1:raw.find("]")]
+        # ip:port
+        if _IP_RE.match(raw.rsplit(":", 1)[0]):
+            return raw.rsplit(":", 1)[0]
+        return raw
+
+    _PRIVATE = ("192.168.", "10.", "172.16.", "172.17.", "172.18.", "172.19.",
+                 "172.2", "127.", "0.", "169.254.", "::1", "fc", "fd")
+
+    seen: set = set()
+    public: list = []
+    for raw in ip_tuple:
+        ip = _extract_ip(str(raw))
+        if not _IP_RE.match(ip):
+            continue
+        if ip in seen or ip.startswith(_PRIVATE):
+            continue
+        seen.add(ip)
+        public.append(ip)
+        if len(public) >= 80:
+            break
+
     if not public:
         return pd.DataFrame(), "No public IP IOCs collected yet."
     last_err = "unknown error"
@@ -729,6 +759,37 @@ def geolocate_ips(ip_tuple: tuple) -> tuple:
         except Exception as exc:
             last_err = str(exc)
     return pd.DataFrame(), last_err
+
+
+@st.cache_data(ttl=1800)
+def extract_ips_from_iocs(ioc_rows: tuple) -> tuple:
+    """Extract candidate IPs from url/ip:port/ip IOC values for geo mapping.
+    ioc_rows is a tuple of (ioc_type, value) tuples.
+    Returns a tuple of unique IP strings.
+    """
+    import re as _re
+    from urllib.parse import urlparse as _urlparse
+    _IP_RE = _re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
+
+    ips: set = set()
+    for ioc_type, value in ioc_rows:
+        t = str(ioc_type).lower()
+        v = str(value).strip()
+        if t in ("ip", "ipv4"):
+            if _IP_RE.match(v):
+                ips.add(v)
+        elif t == "ip:port" and ":" in v:
+            candidate = v.rsplit(":", 1)[0].strip("[]")
+            if _IP_RE.match(candidate):
+                ips.add(candidate)
+        elif t in ("url",):
+            try:
+                host = _urlparse(v).hostname or ""
+                if _IP_RE.match(host):
+                    ips.add(host)
+            except Exception:
+                pass
+    return tuple(ips)
 
 
 def _build_network_graph(reports_df, iocs_df=None):
@@ -1567,10 +1628,12 @@ with tab_dash:
 
         # ── World Map IOC Heatmap ─────────────────────────────────────────────
         st.markdown("#### IOC Geolocation Map")
-        _ip_iocs = tuple(
-            iocs[iocs["ioc_type"].str.lower().str.contains("ip", na=False)]["value"]
-            .dropna().unique()[:80]
+        # Collect IPs from: plain ip, ip:port, and URL-embedded hosts
+        _geo_ioc_rows = tuple(
+            zip(iocs["ioc_type"].fillna("").tolist(),
+                iocs["value"].fillna("").tolist())
         ) if not iocs.empty else ()
+        _ip_iocs = extract_ips_from_iocs(_geo_ioc_rows) if _geo_ioc_rows else ()
         _geo_df, _geo_err = geolocate_ips(_ip_iocs) if _ip_iocs else (pd.DataFrame(), "No IP IOCs collected yet.")
         if not _geo_df.empty:
             # Country frequency for bubble sizing
@@ -2004,6 +2067,218 @@ with tab_iocs:
     if iocs.empty:
         st.info("No IOCs collected yet.")
     else:
+        # ── URL / Domain Intelligence Overview ───────────────────────────────
+        from urllib.parse import urlparse as _urlparse_ioc
+        import re as _re_ioc
+
+        _url_iocs  = iocs[iocs["ioc_type"] == "url"].copy()
+        _dom_iocs  = iocs[iocs["ioc_type"] == "domain"].copy()
+        _ip_iocs_h = iocs[iocs["ioc_type"].isin(["ip", "ip:port"])].copy()
+
+        _total_url  = len(_url_iocs)
+        _total_dom  = len(_dom_iocs)
+        _total_ips  = len(_ip_iocs_h)
+        _total_hash = len(iocs[iocs["ioc_type"].str.contains("hash|md5|sha", case=False, na=False)])
+
+        # Summary stat row
+        _is1, _is2, _is3, _is4, _is5 = st.columns(5)
+        _is1.metric("Total IOCs", f"{len(iocs):,}")
+        _is2.metric("URLs", f"{_total_url:,}")
+        _is3.metric("Domains", f"{_total_dom:,}")
+        _is4.metric("IPs", f"{_total_ips:,}")
+        _is5.metric("Hashes", f"{_total_hash:,}")
+
+        st.divider()
+
+        # ── URL Intelligence Panel ────────────────────────────────────────────
+        if _total_url > 0 or _total_dom > 0:
+            st.markdown("#### 🌐 URL & Domain Intelligence")
+            _ui_col1, _ui_col2 = st.columns(2)
+
+            # ── Left: Top hosting domains from URL IOCs ───────────────────────
+            with _ui_col1:
+                st.markdown("**Top Hosting Domains**")
+                # Extract hostname from URL values
+                _extracted_domains: list = []
+                for _u in _url_iocs["value"].dropna().head(2000):
+                    try:
+                        _h = _urlparse_ioc(str(_u)).hostname or ""
+                        if _h:
+                            _extracted_domains.append(_h)
+                    except Exception:
+                        pass
+                # Also include domain IOCs directly
+                _extracted_domains += _dom_iocs["value"].dropna().head(1000).tolist()
+
+                if _extracted_domains:
+                    import collections
+                    _dom_counts = collections.Counter(_extracted_domains).most_common(15)
+                    _dom_df = pd.DataFrame(_dom_counts, columns=["domain", "count"])
+                    _fig_dom = px.bar(
+                        _dom_df, x="count", y="domain", orientation="h",
+                        color="count",
+                        color_continuous_scale=[[0, "#0d2a4a"], [0.5, "#1e5fa8"], [1, "#38bdf8"]],
+                        labels={"domain": "", "count": "IOC count"},
+                    )
+                    _fig_dom.update_coloraxes(showscale=False)
+                    _fig_dom.update_layout(**_PLOTLY_DARK, height=350,
+                                          showlegend=False,
+                                          yaxis=dict(autorange="reversed"))
+                    _fig_dom.update_traces(texttemplate="%{x}", textposition="outside",
+                                           textfont_size=10, textfont_color="#c8d8f0")
+                    _dom_sel = st.plotly_chart(_fig_dom, on_select="rerun",
+                                               use_container_width=True, key="ioc_dom_bar")
+                    _drill_dom = None
+                    if _dom_sel and _dom_sel.selection and _dom_sel.selection.points:
+                        _drill_dom = _dom_sel.selection.points[0].get("y")
+                    if _drill_dom:
+                        _dom_filter_iocs = _url_iocs[
+                            _url_iocs["value"].str.contains(_drill_dom, case=False, na=False)
+                        ]
+                        _dom_filter_iocs = pd.concat([
+                            _dom_filter_iocs,
+                            _dom_iocs[_dom_iocs["value"].str.contains(_drill_dom, case=False, na=False)]
+                        ])
+                        st.markdown(
+                            f'<div class="metric-card" style="border-left:3px solid #38bdf8">'
+                            f'<b style="color:#c8d8f0">{_drill_dom}</b> — '
+                            f'{len(_dom_filter_iocs)} IOC(s)</div>',
+                            unsafe_allow_html=True)
+                        _dcols = [c for c in ["ioc_type", "value", "malware_family"] if c in _dom_filter_iocs.columns]
+                        st.dataframe(_dom_filter_iocs[_dcols].head(30),
+                                     use_container_width=True, hide_index=True)
+                    else:
+                        st.caption("Click a domain bar to see its IOCs")
+                else:
+                    st.info("Domain extraction pending — URL IOCs will populate this once collected.")
+
+            # ── Right: Malware family distribution for URL/domain IOCs ────────
+            with _ui_col2:
+                st.markdown("**Malware Families (URL/Domain IOCs)**")
+                _fam_pool = pd.concat([_url_iocs, _dom_iocs])
+                _fam_pool = _fam_pool[_fam_pool["malware_family"].fillna("") != ""]
+                if not _fam_pool.empty:
+                    # Explode comma-separated families
+                    _fam_series = (
+                        _fam_pool["malware_family"]
+                        .dropna()
+                        .apply(lambda x: [f.strip() for f in str(x).split(",") if f.strip()])
+                    )
+                    _fam_flat = [f for sublist in _fam_series for f in sublist]
+                    import collections as _col2
+                    _fam_counts = _col2.Counter(_fam_flat).most_common(15)
+                    _fam_df = pd.DataFrame(_fam_counts, columns=["family", "count"])
+                    _fig_fam = px.bar(
+                        _fam_df, x="count", y="family", orientation="h",
+                        color="count",
+                        color_continuous_scale=[[0, "#1a0a30"], [0.5, "#7c3aed"], [1, "#c084fc"]],
+                        labels={"family": "", "count": "Occurrences"},
+                    )
+                    _fig_fam.update_coloraxes(showscale=False)
+                    _fig_fam.update_layout(**_PLOTLY_DARK, height=350,
+                                           showlegend=False,
+                                           yaxis=dict(autorange="reversed"))
+                    _fam_sel = st.plotly_chart(_fig_fam, on_select="rerun",
+                                               use_container_width=True, key="ioc_fam_bar")
+                    _drill_fam = None
+                    if _fam_sel and _fam_sel.selection and _fam_sel.selection.points:
+                        _drill_fam = _fam_sel.selection.points[0].get("y")
+                    if _drill_fam:
+                        _fam_hits = iocs[
+                            iocs["malware_family"].str.contains(_drill_fam, case=False, na=False)
+                        ]
+                        st.markdown(
+                            f'<div class="metric-card" style="border-left:3px solid #c084fc">'
+                            f'<b style="color:#c8d8f0">{_drill_fam}</b> — '
+                            f'{len(_fam_hits)} IOC(s)</div>',
+                            unsafe_allow_html=True)
+                        _fcols = [c for c in ["ioc_type", "value", "malware_family"] if c in _fam_hits.columns]
+                        st.dataframe(_fam_hits[_fcols].head(30),
+                                     use_container_width=True, hide_index=True)
+                    else:
+                        st.caption("Click a malware family to see its IOCs")
+                else:
+                    st.info("Malware family data will appear once URL/domain IOCs are tagged.")
+
+            # ── URL status breakdown + recent malicious URLs ──────────────────
+            if not _url_iocs.empty:
+                with st.expander(f"📋  Recent Malicious URLs  ({min(_total_url, 50)} shown)", expanded=False):
+                    _url_display = _url_iocs[["value", "malware_family"]].head(50).copy()
+                    _url_display.columns = ["URL", "Malware Family"]
+                    # Linkify URLs in a custom HTML table
+                    _url_rows_html = ""
+                    for _, _ur in _url_display.iterrows():
+                        _uval = str(_ur["URL"])
+                        _ufam = str(_ur["Malware Family"]) if _ur["Malware Family"] else ""
+                        _ufam_badge = f'<span class="badge-medium">{_ufam}</span>' if _ufam else ""
+                        # Truncate for display
+                        _udisplay = _uval[:80] + "…" if len(_uval) > 80 else _uval
+                        _url_rows_html += (
+                            f'<tr>'
+                            f'<td style="font-family:monospace;font-size:0.75rem;color:#38bdf8;max-width:420px;word-break:break-all">'
+                            f'<a href="{_uval}" target="_blank" rel="noopener noreferrer" '
+                            f'style="color:#38bdf8;text-decoration:none">{_udisplay}</a></td>'
+                            f'<td style="padding-left:12px">{_ufam_badge}</td>'
+                            f'</tr>'
+                        )
+                    st.markdown(
+                        f'<table style="width:100%;border-collapse:collapse">'
+                        f'<thead><tr>'
+                        f'<th style="text-align:left;color:#6e7fa3;font-size:0.75rem;padding-bottom:4px">URL</th>'
+                        f'<th style="text-align:left;color:#6e7fa3;font-size:0.75rem;padding-left:12px">Family</th>'
+                        f'</tr></thead><tbody>{_url_rows_html}</tbody></table>',
+                        unsafe_allow_html=True,
+                    )
+
+            # ── IP intel from URL-embedded hosts + geo mini-map ───────────────
+            _ioc_rows_for_geo = tuple(
+                zip(iocs["ioc_type"].fillna("").tolist(),
+                    iocs["value"].fillna("").tolist())
+            )
+            _hunt_ips = extract_ips_from_iocs(_ioc_rows_for_geo)
+            if _hunt_ips:
+                with st.expander(f"🗺️  IP Geolocation  ({len(_hunt_ips)} unique IPs from all IOC types)", expanded=False):
+                    _hgeo_df, _hgeo_err = geolocate_ips(_hunt_ips)
+                    if not _hgeo_df.empty:
+                        _hcc = _hgeo_df["countryCode"].value_counts().to_dict()
+                        _hgeo_df["count"] = _hgeo_df["countryCode"].map(_hcc).fillna(1)
+                        _fig_hmap = px.scatter_geo(
+                            _hgeo_df, lat="lat", lon="lon", size="count",
+                            hover_name="country",
+                            hover_data={"query": True, "isp": True, "org": True,
+                                        "lat": False, "lon": False,
+                                        "count": False, "countryCode": False},
+                            projection="natural earth", size_max=28,
+                        )
+                        _fig_hmap.update_traces(
+                            marker=dict(color="#38bdf8", opacity=0.80,
+                                        line=dict(width=0.5, color="#0a1428")))
+                        _fig_hmap.update_geos(
+                            bgcolor="#050810", landcolor="#0d1a30",
+                            oceancolor="#050810", lakecolor="#050810",
+                            coastlinecolor="#1e3a5f", showframe=False,
+                            showcoastlines=True, showland=True,
+                            showcountries=True, countrycolor="#0f2040",
+                        )
+                        _fig_hmap.update_layout(
+                            paper_bgcolor="#050810",
+                            margin=dict(l=0, r=0, t=0, b=0),
+                            height=320, font_color="#c8d8f0",
+                        )
+                        st.plotly_chart(_fig_hmap, use_container_width=True)
+                        _htop = _hgeo_df["country"].value_counts().head(6)
+                        _hparts = [f"**{c}** {n}" for c, n in _htop.items()]
+                        st.caption("Top origins: " + " · ".join(_hparts))
+                        # Country detail table
+                        _hcountry_df = _hgeo_df[["country", "countryCode", "query", "isp", "org"]].copy()
+                        _hcountry_df.columns = ["Country", "Code", "IP", "ISP", "Org"]
+                        st.dataframe(_hcountry_df, use_container_width=True, hide_index=True)
+                    else:
+                        st.info(f"Geo lookup: {_hgeo_err}")
+
+            st.divider()
+
+        # ── Search / Filter / Enrichment Table ───────────────────────────────
         sc1, sc2, sc3 = st.columns([3, 2, 1])
         with sc1:
             search = st.text_input("Search IP, domain, hash, URL…", key="ioc_search")

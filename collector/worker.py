@@ -50,40 +50,88 @@ def _process_cisa_kev(db: Session, items: list) -> int:
 
 
 def _process_threatfox(db: Session, items: list) -> int:
+    import re
+    from urllib.parse import urlparse
+    _IP_RE = re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
+
     saved = 0
     for item in items:
         source_id = f"threatfox_{item.get('id', '')}"
         if db.query(ThreatReport).filter_by(source_id=source_id).first():
             continue
+
+        malware   = item.get("malware_printable", "") or item.get("malware", "") or ""
+        # Use malware family as a meaningful actor label when no explicit actor
+        actor     = item.get("threat_actor") or malware or "Unknown"
+        ioc_type  = item.get("ioc_type", "unknown")
+        ioc_val   = item.get("ioc_value", "")
+        tags      = item.get("tags") or []
+
         report = ThreatReport(
             source_feed="threatfox",
             source_id=source_id,
-            threat_actor=item.get("threat_actor") or "Unknown",
+            threat_actor=actor,
             confidence_score=int(item.get("confidence_level") or 0),
             raw_source=str(item)[:2000],
         )
         db.add(report)
         db.flush()
-        ioc_val = item.get("ioc_value", "")
+
         if ioc_val:
             db.add(IOC(
                 report_id=report.id,
-                ioc_type=item.get("ioc_type", "unknown"),
+                ioc_type=ioc_type,
                 value=ioc_val[:512],
-                malware_family=item.get("malware_printable", ""),
-                tags=item.get("tags") or [],
+                malware_family=malware,
+                tags=tags,
             ))
+            # ip:port → also store a clean ip IOC so geo mapping works
+            if ioc_type == "ip:port" and ":" in ioc_val:
+                clean_ip = ioc_val.rsplit(":", 1)[0].strip("[]")  # handle IPv6 [::1]:80
+                if _IP_RE.match(clean_ip):
+                    db.add(IOC(
+                        report_id=report.id,
+                        ioc_type="ip",
+                        value=clean_ip[:512],
+                        malware_family=malware,
+                        tags=tags,
+                    ))
+            # url → also extract hostname as domain or ip IOC
+            elif ioc_type == "url":
+                try:
+                    host = urlparse(ioc_val).hostname or ""
+                    if host:
+                        host_type = "ip" if _IP_RE.match(host) else "domain"
+                        db.add(IOC(
+                            report_id=report.id,
+                            ioc_type=host_type,
+                            value=host[:512],
+                            malware_family=malware,
+                            tags=tags,
+                        ))
+                except Exception:
+                    pass
+
         saved += 1
     db.commit()
     return saved
 
 
 def _process_urlhaus(db: Session, items: list) -> int:
+    import re
+    from urllib.parse import urlparse
+    _IP_RE = re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
+
     saved = 0
     for item in items:
         source_id = f"urlhaus_{item.get('id', '')}"
         if db.query(ThreatReport).filter_by(source_id=source_id).first():
             continue
+
+        tags    = item.get("tags") or []
+        threat  = item.get("threat", "")
+        malware = ", ".join(str(t) for t in tags[:3]) or threat or "Unknown"
+
         report = ThreatReport(
             source_feed="urlhaus",
             source_id=source_id,
@@ -93,16 +141,35 @@ def _process_urlhaus(db: Session, items: list) -> int:
         )
         db.add(report)
         db.flush()
+
         url_val = item.get("url", "")
         if url_val:
-            tags = item.get("tags") or []
             db.add(IOC(
                 report_id=report.id,
                 ioc_type="url",
                 value=url_val[:512],
-                malware_family=", ".join(str(t) for t in tags[:3]),
+                malware_family=malware,
                 tags=tags,
             ))
+
+        # URLhaus provides a 'host' field (IP or domain) — store as dedicated IOC
+        # so geolocation and domain analytics can work on it directly.
+        host = (item.get("host") or "").strip()
+        if not host and url_val:
+            try:
+                host = urlparse(url_val).hostname or ""
+            except Exception:
+                host = ""
+        if host:
+            host_type = "ip" if _IP_RE.match(host) else "domain"
+            db.add(IOC(
+                report_id=report.id,
+                ioc_type=host_type,
+                value=host[:512],
+                malware_family=malware,
+                tags=tags,
+            ))
+
         saved += 1
     db.commit()
     return saved
