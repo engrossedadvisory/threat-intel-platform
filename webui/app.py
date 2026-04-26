@@ -1600,8 +1600,8 @@ with k7: st.metric("⚑ Open Alerts",   f"{open_hits:,}")
 
 st.divider()
 
-# ─── Drill Panel (AI threat analysis, shown above tabs on any chart click) ───
-_render_drill_panel()
+# Drill Panel intentionally NOT auto-rendered here.
+# AI analysis is opt-in via buttons within each target tab.
 
 # ─── Tab navigation (JS click) ───────────────────────────────────────────────
 # height=0 silently skips iframe execution in most browsers; height=1 works.
@@ -1922,7 +1922,10 @@ with tab_dash:
             _top_countries = _geo_df["country"].value_counts().head(5)
             _cc_parts = [f"**{c}** {n}" for c, n in _top_countries.items()]
             if _drill_map_country:
-                _go_to_tab(4, nav_ioc_country=_drill_map_country)  # IOC Hunt
+                # Also pass the list of IPs so IOC Hunt can filter to them
+                _country_ip_list = _geo_df[_geo_df["country"] == _drill_map_country]["query"].tolist()
+                _go_to_tab(4, nav_ioc_country=_drill_map_country,
+                           nav_ioc_country_ips=_country_ip_list)  # IOC Hunt
             else:
                 st.caption("Top origins: " + " \u00b7 ".join(_cc_parts) + " \u00b7 Click a bubble to open those IPs in IOC Hunt")
         else:
@@ -2152,11 +2155,31 @@ with tab_dash:
 with tab_feed:
     st.markdown('<p class="section-label"><i class="bi bi-lightning-fill bi-sm icon-error"></i>&nbsp; Active Threat Reports</p>', unsafe_allow_html=True)
 
-    # Nav banner when jumping from a dashboard chart
+    # Nav context from dashboard chart
     if "nav_feed_filter" in st.session_state:
         _nff = st.session_state["nav_feed_filter"]
-        _nav_banner(f"Filtered from Dashboard — Feed: **{_nff}**", "clear_nav_feed", "nav_feed_filter")
+        _ff_bc1, _ff_bc2 = st.columns([9, 1])
+        with _ff_bc1:
+            st.info(f"Drilled from Dashboard — Feed: **{_nff}**")
+        with _ff_bc2:
+            if st.button("✕ Clear", key="clear_nav_feed"):
+                st.session_state.pop("nav_feed_filter", None)
+                st.rerun()
         st.session_state.setdefault("ff_src", [_nff])
+        # Opt-in AI summary for this feed
+        _feed_ai_key = f"feed_ai_{_nff}"
+        if _feed_ai_key not in st.session_state:
+            if st.button(f"Generate AI Analysis for {_nff} feed", key=f"btn_{_feed_ai_key}", type="primary"):
+                _feed_rpts = reports[reports["source_feed"] == _nff]
+                _ctx = f"{len(_feed_rpts)} reports. Actors: {', '.join(_feed_rpts['threat_actor'].dropna().unique()[:5])}."
+                with st.spinner("Generating feed threat analysis…"):
+                    st.session_state[_feed_ai_key] = _drill_ai_analysis("Threat Feed", _nff, _ctx)
+                st.rerun()
+        else:
+            st.markdown(st.session_state[_feed_ai_key])
+            if st.button("Clear Analysis", key=f"clr_{_feed_ai_key}"):
+                del st.session_state[_feed_ai_key]
+                st.rerun()
 
     if reports.empty:
         st.info("Collector is initialising feeds — check back in a few minutes.")
@@ -2253,10 +2276,16 @@ with tab_feed:
 with tab_actors:
     st.markdown('<p class="section-label"><i class="bi bi-person-badge-fill bi-sm icon-accent"></i>&nbsp; Threat Actor Profiles</p>', unsafe_allow_html=True)
 
-    # Nav banner when jumping from a dashboard chart
-    if "nav_actor_filter" in st.session_state:
-        _naf = st.session_state["nav_actor_filter"]
-        _nav_banner(f"Filtered from Dashboard — Actor: **{_naf}**", "clear_nav_actor", "nav_actor_filter")
+    # Pinned actor from chart drill-down
+    _pinned_actor = st.session_state.get("nav_actor_filter")
+    if _pinned_actor:
+        col_lbl, col_clr = st.columns([9, 1])
+        with col_lbl:
+            st.info(f"Navigated from Dashboard — Actor: **{_pinned_actor}**")
+        with col_clr:
+            if st.button("✕ Clear", key="clear_nav_actor"):
+                st.session_state.pop("nav_actor_filter", None)
+                st.rerun()
 
     if reports.empty:
         st.info("No threat data yet.")
@@ -2292,7 +2321,8 @@ with tab_actors:
                 "industries": industries,
             })
 
-        actor_data.sort(key=lambda x: -x["reports"])
+        # Pinned actor sorts to top
+        actor_data.sort(key=lambda x: (0 if x["actor"] == _pinned_actor else 1, -x["reports"]))
 
         if not actor_data:
             st.info("Actor profiles populate as the AI enrichment runs (may take a few cycles).")
@@ -2311,8 +2341,9 @@ with tab_actors:
 
             st.markdown("#### Actor Details")
             for a in actor_data:
-                badge = _severity_badge(a["avg_conf"])
-                with st.expander(f"**{a['actor']}** — {a['reports']} report(s)"):
+                badge      = _severity_badge(a["avg_conf"])
+                is_pinned  = (a["actor"] == _pinned_actor)
+                with st.expander(f"**{a['actor']}** — {a['reports']} report(s)", expanded=is_pinned):
                     c1, c2, c3 = st.columns(3)
                     with c1:
                         st.markdown("**Confidence**")
@@ -2337,12 +2368,38 @@ with tab_actors:
                         st.markdown("  ".join(f"`{c}`" for c in a["cves"][:10]))
 
                     # IOCs attributed to this actor
-                    actor_reports = reports[reports["threat_actor"] == a["actor"]]
-                    actor_iocs = iocs[iocs["report_id"].isin(actor_reports["id"])]
-                    if not actor_iocs.empty:
-                        st.markdown(f"**IOCs ({min(len(actor_iocs), 20)} shown)**")
-                        cols = [c for c in ["ioc_type", "value", "malware_family"] if c in actor_iocs.columns]
-                        st.dataframe(actor_iocs[cols].head(20), use_container_width=True, hide_index=True)
+                    actor_reports_df = reports[reports["threat_actor"] == a["actor"]]
+                    actor_iocs_df    = iocs[iocs["report_id"].isin(actor_reports_df["id"])]
+                    if not actor_iocs_df.empty:
+                        st.markdown(f"**IOCs ({min(len(actor_iocs_df), 20)} shown)**")
+                        cols = [c for c in ["ioc_type", "value", "malware_family"] if c in actor_iocs_df.columns]
+                        st.dataframe(actor_iocs_df[cols].head(20), use_container_width=True, hide_index=True)
+
+                    # Opt-in AI analysis button
+                    _ai_key = f"actor_ai_{a['actor']}"
+                    context_str = (
+                        f"TTPs: {', '.join(a['ttps'][:10])}. "
+                        f"CVEs: {', '.join(a['cves'][:5])}. "
+                        f"Feeds: {', '.join(a['feeds'])}. "
+                        f"Industries: {', '.join(a['industries'].keys())}."
+                    )
+                    if _ai_key not in st.session_state:
+                        if st.button(
+                            f"Generate AI Analysis for {a['actor']}",
+                            key=f"btn_{_ai_key}",
+                            type="primary",
+                        ):
+                            with st.spinner("Generating threat analysis…"):
+                                st.session_state[_ai_key] = _drill_ai_analysis(
+                                    "Threat Actor", a["actor"], context_str
+                                )
+                            st.rerun()
+                    else:
+                        st.markdown("---")
+                        st.markdown(st.session_state[_ai_key])
+                        if st.button("Clear Analysis", key=f"clr_{_ai_key}"):
+                            del st.session_state[_ai_key]
+                            st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2352,18 +2409,75 @@ with tab_iocs:
     st.markdown('<p class="section-label"><i class="bi bi-search bi-sm icon-accent"></i>&nbsp; IOC Hunt &amp; Enrichment</p>', unsafe_allow_html=True)
 
     # Nav banner when jumping from a dashboard chart
-    _nav_ioc_context = (
-        st.session_state.get("nav_ioc_value") or
-        st.session_state.get("nav_ioc_type") or
-        st.session_state.get("nav_ioc_country")
-    )
-    if _nav_ioc_context:
-        _nav_lbl = (
-            f"Navigated from ticker — IOC: **{st.session_state.get('nav_ioc_value')}** ({st.session_state.get('nav_ioc_type','')})" if st.session_state.get("nav_ioc_value")
-            else f"Filtered from Dashboard — Type: **{st.session_state.get('nav_ioc_type')}**" if st.session_state.get("nav_ioc_type")
-            else f"Filtered from Dashboard — Country: **{st.session_state.get('nav_ioc_country')}**"
-        )
-        _nav_banner(_nav_lbl, "clear_nav_ioc", "nav_ioc_value", "nav_ioc_type", "nav_ioc_country", "nav_ioc_family")
+    # ── Pinned IOC from chart/ticker drill-down ───────────────────────────────
+    _pinned_ioc_value   = st.session_state.get("nav_ioc_value")
+    _pinned_ioc_type    = st.session_state.get("nav_ioc_type")
+    _pinned_ioc_country = st.session_state.get("nav_ioc_country")
+    _pinned_ioc_family  = st.session_state.get("nav_ioc_family", "")
+
+    if _pinned_ioc_value or _pinned_ioc_type or _pinned_ioc_country:
+        # Determine the focused IOC row(s)
+        if _pinned_ioc_value and not iocs.empty:
+            _focused_iocs = iocs[iocs["value"] == _pinned_ioc_value]
+        elif _pinned_ioc_type and not iocs.empty:
+            _focused_iocs = iocs[iocs["ioc_type"] == _pinned_ioc_type]
+        elif _pinned_ioc_country and not iocs.empty:
+            # Country filter: match IPs geolocated to that country (stored in nav state)
+            _country_ips = st.session_state.get("nav_ioc_country_ips", [])
+            _focused_iocs = iocs[iocs["value"].isin(_country_ips)] if _country_ips else iocs.head(0)
+        else:
+            _focused_iocs = iocs.head(0)
+
+        # Determine label
+        if _pinned_ioc_value:
+            _focus_label = f"IOC: **{_pinned_ioc_value}**" + (f" ({_pinned_ioc_type})" if _pinned_ioc_type else "")
+        elif _pinned_ioc_type:
+            _focus_label = f"IOC Type: **{_pinned_ioc_type}** — {len(_focused_iocs):,} matching IOCs"
+        else:
+            _focus_label = f"Country: **{_pinned_ioc_country}** — {len(_focused_iocs):,} IOCs"
+
+        # Banner + clear
+        _bc1, _bc2 = st.columns([9, 1])
+        with _bc1:
+            st.info(f"Drilled from Dashboard — {_focus_label}")
+        with _bc2:
+            if st.button("✕ Clear", key="clear_nav_ioc"):
+                for _k in ("nav_ioc_value", "nav_ioc_type", "nav_ioc_country",
+                           "nav_ioc_family", "nav_ioc_country_ips"):
+                    st.session_state.pop(_k, None)
+                st.rerun()
+
+        # Show the focused IOC(s) prominently
+        if not _focused_iocs.empty:
+            _fcols = [c for c in ["ioc_type", "value", "malware_family", "tags", "source_feed"]
+                      if c in _focused_iocs.columns]
+            st.dataframe(_focused_iocs[_fcols].head(50),
+                         use_container_width=True, hide_index=True)
+
+            # Opt-in AI analysis
+            _ioc_ai_key = f"ioc_ai_{_pinned_ioc_value or _pinned_ioc_type or _pinned_ioc_country}"
+            if _ioc_ai_key not in st.session_state:
+                if st.button("Generate AI Analysis", key=f"btn_{_ioc_ai_key}", type="primary"):
+                    _first = _focused_iocs.iloc[0]
+                    _ctx = (
+                        f"Type: {_first.get('ioc_type','')}. "
+                        f"Family: {_first.get('malware_family','Unknown')}. "
+                        f"Feed: {_first.get('source_feed','')}."
+                    )
+                    with st.spinner("Generating threat analysis…"):
+                        st.session_state[_ioc_ai_key] = _drill_ai_analysis(
+                            "IOC",
+                            _pinned_ioc_value or _pinned_ioc_type or _pinned_ioc_country,
+                            _ctx,
+                        )
+                    st.rerun()
+            else:
+                st.markdown(st.session_state[_ioc_ai_key])
+                if st.button("Clear Analysis", key=f"clr_{_ioc_ai_key}"):
+                    del st.session_state[_ioc_ai_key]
+                    st.rerun()
+
+        st.divider()
 
     if iocs.empty:
         st.info("No IOCs collected yet.")
@@ -2671,7 +2785,28 @@ with tab_cves:
     # Nav banner when jumping from a dashboard chart
     if "nav_cve_severity" in st.session_state:
         _ncvs = st.session_state["nav_cve_severity"]
-        _nav_banner(f"Filtered from Dashboard — Severity: **{_ncvs}**", "clear_nav_cve", "nav_cve_severity")
+        _cve_bc1, _cve_bc2 = st.columns([9, 1])
+        with _cve_bc1:
+            st.info(f"Drilled from Dashboard — Severity: **{_ncvs}** CVEs")
+        with _cve_bc2:
+            if st.button("✕ Clear", key="clear_nav_cve"):
+                st.session_state.pop("nav_cve_severity", None)
+                st.rerun()
+        _cve_ai_key = f"cve_ai_{_ncvs}"
+        if _cve_ai_key not in st.session_state:
+            if st.button(f"Generate AI Analysis for {_ncvs} CVEs",
+                         key=f"btn_{_cve_ai_key}", type="primary"):
+                with st.spinner("Generating CVE threat analysis…"):
+                    st.session_state[_cve_ai_key] = _drill_ai_analysis(
+                        "CVE Severity", _ncvs,
+                        f"Focus on {_ncvs}-severity vulnerabilities and their exploitation patterns."
+                    )
+                st.rerun()
+        else:
+            st.markdown(st.session_state[_cve_ai_key])
+            if st.button("Clear Analysis", key=f"clr_{_cve_ai_key}"):
+                del st.session_state[_cve_ai_key]
+                st.rerun()
         # Pre-populate CVSS slider for that severity tier
         _sev_cvss = {"Critical": 9.0, "High": 7.0, "Medium": 4.0, "Low": 0.0}.get(_ncvs, 0.0)
         st.session_state.setdefault("cve_cvss", _sev_cvss)
@@ -2772,7 +2907,28 @@ with tab_attack:
     # Nav banner when jumping from a dashboard chart
     if "nav_attack_tactic" in st.session_state:
         _nat = st.session_state["nav_attack_tactic"]
-        _nav_banner(f"Filtered from Dashboard — Tactic / TTP: **{_nat}**", "clear_nav_attack", "nav_attack_tactic")
+        _atk_bc1, _atk_bc2 = st.columns([9, 1])
+        with _atk_bc1:
+            st.info(f"Drilled from Dashboard — Tactic / TTP: **{_nat}**")
+        with _atk_bc2:
+            if st.button("✕ Clear", key="clear_nav_attack"):
+                st.session_state.pop("nav_attack_tactic", None)
+                st.rerun()
+        _atk_ai_key = f"attack_ai_{_nat}"
+        if _atk_ai_key not in st.session_state:
+            if st.button(f"Generate AI Analysis for {_nat}",
+                         key=f"btn_{_atk_ai_key}", type="primary"):
+                with st.spinner("Generating ATT&CK analysis…"):
+                    st.session_state[_atk_ai_key] = _drill_ai_analysis(
+                        "ATT&CK Tactic", _nat,
+                        f"Explain the {_nat} tactic, observed techniques, and defensive mitigations."
+                    )
+                st.rerun()
+        else:
+            st.markdown(st.session_state[_atk_ai_key])
+            if st.button("Clear Analysis", key=f"clr_{_atk_ai_key}"):
+                del st.session_state[_atk_ai_key]
+                st.rerun()
 
     if techniques_df.empty:
         st.info("ATT&CK data not loaded yet — collector populates this on its first 24-hour cycle.")
@@ -3292,7 +3448,13 @@ with tab_watchlist:
     # Nav banner when jumping from a dashboard chart
     if "nav_watchlist_date" in st.session_state:
         _nwd = st.session_state["nav_watchlist_date"]
-        _nav_banner(f"Filtered from Dashboard — Hits on: **{_nwd}**", "clear_nav_wl", "nav_watchlist_date")
+        _wl_bc1, _wl_bc2 = st.columns([9, 1])
+        with _wl_bc1:
+            st.info(f"Drilled from Dashboard — Watchlist hits on: **{_nwd}**")
+        with _wl_bc2:
+            if st.button("✕ Clear", key="clear_nav_wl"):
+                st.session_state.pop("nav_watchlist_date", None)
+                st.rerun()
 
     wl_c1, wl_c2 = st.columns([3, 1])
     with wl_c2:
