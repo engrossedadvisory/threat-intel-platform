@@ -1424,10 +1424,6 @@ if not iocs.empty:
     })
 
     # ── Row header: label + clear button ─────────────────────────────────────
-    # Capture Clear click BEFORE rendering dataframe so the rerun below
-    # fires after we've already evicted the old widget state — ensuring the
-    # fresh dataframe starts with an empty selection on the next run.
-    _tdv       = st.session_state.get("ticker_drill_ver", 0)
     _tbl_col1, _tbl_col2 = st.columns([7, 1])
     with _tbl_col1:
         st.markdown(
@@ -1437,15 +1433,9 @@ if not iocs.empty:
             unsafe_allow_html=True,
         )
     with _tbl_col2:
-        _do_clear = st.button("⟳ Clear", key="clear_ticker_sel", help="Clear selection")
-
-    # Evict old widget state and bump version so the dataframe below renders
-    # as a brand-new widget with zero selection.
-    if _do_clear:
-        _old_df_key = f"ticker_drill_{_tdv}"
-        st.session_state.pop(_old_df_key, None)
-        st.session_state["ticker_drill_ver"] = _tdv + 1
-        st.rerun()
+        if st.button("⟳ Clear", key="clear_ticker_sel", help="Clear selection"):
+            st.session_state["ticker_drill_open"] = False
+            st.rerun()
 
     _ticker_sel = st.dataframe(
         _drill_display,
@@ -1454,7 +1444,7 @@ if not iocs.empty:
         height=130,
         on_select="rerun",
         selection_mode="multi-row",
-        key=f"ticker_drill_{_tdv}",
+        key="ticker_drill",
         column_config={
             "Type":              st.column_config.TextColumn(width="small"),
             "IOC Value":         st.column_config.TextColumn(width="large"),
@@ -1463,12 +1453,18 @@ if not iocs.empty:
         },
     )
 
-    # ── Drill-down panel (appears below table on row click) ───────────────────
-    _ticker_sel_rows = (
+    # ── Drill-down panel ──────────────────────────────────────────────────────
+    # Visibility is controlled by session state so the Clear button (and a
+    # page refresh, which wipes session state) reliably hides it.
+    _raw_rows = (
         _ticker_sel.selection.rows
         if _ticker_sel and hasattr(_ticker_sel, "selection")
         else []
     )
+    if _raw_rows:
+        st.session_state["ticker_drill_open"] = True
+
+    _ticker_sel_rows = _raw_rows if st.session_state.get("ticker_drill_open") else []
 
     # ── Multi-row summary panel ───────────────────────────────────────────────
     if len(_ticker_sel_rows) > 1:
