@@ -1084,23 +1084,165 @@ def _cvss_badge(score) -> str:
     return f'<span class="badge-low">CVSS {s:.1f}</span>'
 
 
-def _go_to_tab(tab_idx: int, **filters) -> None:
+def _set_drill(entity_type: str, entity_value: str,
+               target_tab_idx: int | None = None,
+               target_tab_name: str = "",
+               **context) -> None:
     """
-    Navigate to a tab by index, optionally pre-loading session-state filters.
-    Stores a pending nav index; the JS injector at the top of the tab block
-    picks it up and clicks the correct tab button in the browser.
+    Store a drill-down context in session state and rerun.
+    The Drill Panel rendered above the tabs picks this up and shows
+    AI analysis + mitigations immediately, with an optional 'Jump to tab' button.
     """
-    for k, v in filters.items():
-        st.session_state[k] = v
-    st.session_state["_nav_pending_tab"] = tab_idx
+    st.session_state["drill_context"] = {
+        "entity_type":    entity_type,
+        "entity_value":   entity_value,
+        "target_tab_idx": target_tab_idx,
+        "target_tab_name": target_tab_name,
+        **context,
+    }
+    if target_tab_idx is not None:
+        st.session_state["_nav_pending_tab"] = target_tab_idx
     st.rerun()
 
 
+# Keep _go_to_tab as a thin alias used by existing call sites
+def _go_to_tab(tab_idx: int, **filters) -> None:
+    entity_type  = "Feed" if "nav_feed_filter" in filters else \
+                   "Actor" if "nav_actor_filter" in filters else \
+                   "IOC" if ("nav_ioc_value" in filters or "nav_ioc_type" in filters or "nav_ioc_country" in filters) else \
+                   "Tactic" if "nav_attack_tactic" in filters else \
+                   "CVE" if "nav_cve_severity" in filters else \
+                   "Watchlist"
+    entity_value = (
+        filters.get("nav_feed_filter") or
+        filters.get("nav_actor_filter") or
+        filters.get("nav_ioc_value") or
+        filters.get("nav_ioc_type") or
+        filters.get("nav_ioc_country") or
+        filters.get("nav_attack_tactic") or
+        filters.get("nav_cve_severity") or
+        filters.get("nav_watchlist_date") or ""
+    )
+    tab_names = {
+        0: "Dashboard", 1: "Threat Advisor", 2: "Threat Feed", 3: "Actors",
+        4: "IOC Hunt", 5: "CVE Tracker", 6: "ATT&CK", 7: "AI Analyst",
+        8: "Dark Web", 9: "Watchlist", 10: "Alerts", 11: "Campaigns",
+        12: "Feed Health", 13: "Admin",
+    }
+    _set_drill(entity_type, entity_value,
+               target_tab_idx=tab_idx,
+               target_tab_name=tab_names.get(tab_idx, ""),
+               **filters)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _drill_ai_analysis(entity_type: str, entity_value: str, context: str) -> str:
+    """
+    Generate a full threat analysis with mitigations for any drill-down entity.
+    Cached 30 min per unique (type, value, context) combination.
+    """
+    prompt = (
+        "You are a senior threat intelligence analyst. Provide a structured "
+        "analysis of the following threat entity based on known intelligence.\n\n"
+        f"Entity Type: {entity_type}\n"
+        f"Entity: {entity_value}\n"
+        + (f"Context: {context}\n" if context else "")
+        + "\nRespond in this exact markdown format:\n\n"
+        "## Threat Summary\n"
+        "[2-3 sentences: what this threat is, who uses it, and its objective]\n\n"
+        "## Known Attack Patterns\n"
+        "[Bullet list of observed TTPs or behaviors]\n\n"
+        "## Immediate Mitigation Steps\n"
+        "[Numbered list of 4-5 specific defensive actions to take right now]\n\n"
+        "## Strategic Recommendations\n"
+        "[2-3 longer-term defensive posture improvements]\n\n"
+        "Be specific, concise, and directly actionable."
+    )
+    return analyst_reply([{"role": "user", "content": prompt}])
+
+
+def _render_drill_panel() -> None:
+    """
+    Render the Drill Panel between the KPI strip and tabs.
+    Appears only when drill_context is set in session state.
+    Shows AI threat analysis + mitigations + a jump-to-tab button.
+    """
+    ctx = st.session_state.get("drill_context")
+    if not ctx:
+        return
+
+    etype  = ctx.get("entity_type", "Entity")
+    evalue = ctx.get("entity_value", "")
+    tname  = ctx.get("target_tab_name", "")
+    tidx   = ctx.get("target_tab_idx")
+    extra  = {k: v for k, v in ctx.items()
+              if k not in ("entity_type", "entity_value", "target_tab_idx", "target_tab_name")}
+    context_str = " | ".join(f"{k}: {v}" for k, v in extra.items() if v)
+
+    st.markdown(
+        '<div style="background:rgba(6,214,160,0.04);border:1px solid #06d6a030;'
+        'border-left:4px solid #38bdf8;border-radius:8px;padding:14px 18px;margin:8px 0 12px 0">',
+        unsafe_allow_html=True,
+    )
+    hdr_l, hdr_r = st.columns([8, 1])
+    with hdr_l:
+        st.markdown(
+            f'<p style="margin:0;font-size:0.68rem;color:#3d5a80;text-transform:uppercase;'
+            f'letter-spacing:0.1em"><i class="bi bi-crosshair2"></i>&nbsp; Threat Intelligence Detail</p>'
+            f'<p style="margin:2px 0 0 0;font-size:1rem;color:#38bdf8;font-weight:700">'
+            f'{etype}: <span style="color:#c8d8f0;font-family:monospace">{evalue}</span></p>',
+            unsafe_allow_html=True,
+        )
+    with hdr_r:
+        if st.button("✕ Close", key="close_drill_panel"):
+            st.session_state.pop("drill_context", None)
+            st.rerun()
+
+    ai_col, nav_col = st.columns([4, 1])
+
+    with ai_col:
+        with st.spinner("Generating AI threat analysis and mitigations…"):
+            analysis = _drill_ai_analysis(etype, evalue, context_str)
+        if analysis.startswith("⚠️"):
+            st.warning(analysis)
+        else:
+            st.markdown(analysis)
+
+    with nav_col:
+        st.markdown(
+            '<p style="font-size:0.7rem;color:#3d5a80;text-transform:uppercase;'
+            'letter-spacing:0.08em;margin-bottom:8px">Quick Links</p>',
+            unsafe_allow_html=True,
+        )
+        # Enrichment links for IOC types
+        if etype == "IOC" and evalue:
+            ioc_type = extra.get("nav_ioc_type", "")
+            st.markdown(
+                _enrichment_links(ioc_type, evalue),
+                unsafe_allow_html=True,
+            )
+        # Jump-to-tab button
+        if tname and tidx is not None:
+            st.markdown('<div style="margin-top:12px">', unsafe_allow_html=True)
+            if st.button(
+                f"Open in {tname} →",
+                key="drill_jump_tab",
+                type="primary",
+                use_container_width=True,
+            ):
+                # Store nav pending (JS will click it on next rerun)
+                st.session_state["_nav_pending_tab"] = tidx
+                # Also set the filter keys so the target tab pre-filters
+                for k, v in extra.items():
+                    st.session_state[k] = v
+                st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
 def _nav_banner(label: str, clear_key: str, *state_keys: str) -> None:
-    """
-    Render a dismissible info banner at the top of a tab when navigated from a chart.
-    Clears all given session-state keys when the user dismisses it.
-    """
+    """Dismissible banner shown at the top of a tab after navigation."""
     col_txt, col_btn = st.columns([9, 1])
     with col_txt:
         st.info(label)
@@ -1437,56 +1579,7 @@ if not iocs.empty:
         unsafe_allow_html=True,
     )
 
-    # ── Interactive drill-down row ────────────────────────────────────────────
-    _drill_cols_all = ["ioc_type", "value", "malware_family", "tags"]
-    _drill_cols = [c for c in _drill_cols_all if c in _ticker_iocs.columns]
-    _drill_display = _ticker_iocs[_drill_cols].copy()
-    if "tags" in _drill_display.columns:
-        _drill_display["tags"] = _drill_display["tags"].apply(
-            lambda t: ", ".join(t[:3]) if isinstance(t, list) else str(t or "")
-        )
-    _drill_display = _drill_display.rename(columns={
-        "ioc_type": "Type", "value": "IOC Value",
-        "malware_family": "Malware / Family", "tags": "Tags",
-    })
-
-    # ── Click a row → navigate to IOC Hunt ───────────────────────────────────
-    st.markdown(
-        '<p style="font-size:0.72rem;color:#3d5a80;text-transform:uppercase;'
-        'letter-spacing:0.08em;margin:6px 0 2px 0">'
-        '<i class="bi bi-box-arrow-in-right"></i>&nbsp; Click a row to open it in IOC Hunt</p>',
-        unsafe_allow_html=True,
-    )
-    _ticker_sel = st.dataframe(
-        _drill_display,
-        use_container_width=True,
-        hide_index=True,
-        height=130,
-        on_select="rerun",
-        selection_mode="single-row",
-        key="ticker_drill",
-        column_config={
-            "Type":              st.column_config.TextColumn(width="small"),
-            "IOC Value":         st.column_config.TextColumn(width="large"),
-            "Malware / Family":  st.column_config.TextColumn(width="medium"),
-            "Tags":              st.column_config.TextColumn(width="medium"),
-        },
-    )
-
-    # ── Navigate to IOC Hunt on row click ────────────────────────────────────
-    _raw_rows = (
-        _ticker_sel.selection.rows
-        if _ticker_sel and hasattr(_ticker_sel, "selection")
-        else []
-    )
-    if _raw_rows:
-        _sel_ioc  = _ticker_iocs.iloc[_raw_rows[0]]
-        _go_to_tab(
-            4,  # IOC Hunt tab
-            nav_ioc_value  = str(_sel_ioc.get("value", "")),
-            nav_ioc_type   = str(_sel_ioc.get("ioc_type", "")),
-            nav_ioc_family = str(_sel_ioc.get("malware_family") or ""),
-        )
+    # Ticker is display-only. Use the IOC Hunt tab to search and explore IOCs.
 
 # ─── Top KPI strip ────────────────────────────────────────────────────────────
 k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
@@ -1507,19 +1600,23 @@ with k7: st.metric("⚑ Open Alerts",   f"{open_hits:,}")
 
 st.divider()
 
+# ─── Drill Panel (AI threat analysis, shown above tabs on any chart click) ───
+_render_drill_panel()
+
 # ─── Tab navigation (JS click) ───────────────────────────────────────────────
-# _go_to_tab() stores "_nav_pending_tab" then reruns. On the rerun we land
-# here, inject a tiny iframe script that clicks the target tab button, then
-# pop the key so it only fires once.
+# height=0 silently skips iframe execution in most browsers; height=1 works.
 if "_nav_pending_tab" in st.session_state:
     import streamlit.components.v1 as _cmpv1
     _ni = st.session_state.pop("_nav_pending_tab")
     _cmpv1.html(
-        f"<script>(function(){{var t=0;function c(){{"
-        f"var b=window.parent.document.querySelectorAll('button[role=\"tab\"]');"
-        f"if(b[{_ni}]){{b[{_ni}].click();}}else if(t++<20){{setTimeout(c,100);}}}};c();}})();"
-        f"</script>",
-        height=0, scrolling=False,
+        f"<script>(function(){{"
+        f"var t=0;"
+        f"function c(){{"
+        f"  var b=window.parent.document.querySelectorAll('button[role=\"tab\"]');"
+        f"  if(b[{_ni}]){{b[{_ni}].click();}}"
+        f"  else if(t++<30){{setTimeout(c,150);}}"
+        f"}};c();}})();</script>",
+        height=1, scrolling=False,
     )
 
 # ─── Tabs ─────────────────────────────────────────────────────────────────────
