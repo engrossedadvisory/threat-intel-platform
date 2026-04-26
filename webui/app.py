@@ -1423,26 +1423,29 @@ if not iocs.empty:
         "malware_family": "Malware / Family", "tags": "Tags",
     })
 
-    # ── Row header: select-all checkbox + label + clear button ───────────────
-    _tdv = st.session_state.get("ticker_drill_ver", 0)  # version key — changes on Clear
-    _tbl_col0, _tbl_col1, _tbl_col2 = st.columns([1, 5, 1])
-    with _tbl_col0:
-        _select_all = st.checkbox(
-            "All",
-            key=f"ticker_select_all_{_tdv}",   # versioned — resets to False on Clear
-            help="Select all IOCs",
-        )
+    # ── Row header: label + clear button ─────────────────────────────────────
+    # Capture Clear click BEFORE rendering dataframe so the rerun below
+    # fires after we've already evicted the old widget state — ensuring the
+    # fresh dataframe starts with an empty selection on the next run.
+    _tdv       = st.session_state.get("ticker_drill_ver", 0)
+    _tbl_col1, _tbl_col2 = st.columns([7, 1])
     with _tbl_col1:
         st.markdown(
             '<p style="font-size:0.72rem;color:#3d5a80;text-transform:uppercase;'
             'letter-spacing:0.08em;margin:6px 0 2px 0">'
-            '<i class="bi bi-table"></i>&nbsp; Click a row to drill down</p>',
+            '<i class="bi bi-table"></i>&nbsp; Click rows to drill down</p>',
             unsafe_allow_html=True,
         )
     with _tbl_col2:
-        if st.button("⟳ Clear", key="clear_ticker_sel", help="Clear selection"):
-            st.session_state["ticker_drill_ver"] = _tdv + 1
-            st.rerun()
+        _do_clear = st.button("⟳ Clear", key="clear_ticker_sel", help="Clear selection")
+
+    # Evict old widget state and bump version so the dataframe below renders
+    # as a brand-new widget with zero selection.
+    if _do_clear:
+        _old_df_key = f"ticker_drill_{_tdv}"
+        st.session_state.pop(_old_df_key, None)
+        st.session_state["ticker_drill_ver"] = _tdv + 1
+        st.rerun()
 
     _ticker_sel = st.dataframe(
         _drill_display,
@@ -1461,16 +1464,10 @@ if not iocs.empty:
     )
 
     # ── Drill-down panel (appears below table on row click) ───────────────────
-    _raw_sel_rows = (
+    _ticker_sel_rows = (
         _ticker_sel.selection.rows
         if _ticker_sel and hasattr(_ticker_sel, "selection")
         else []
-    )
-    # "Select All" overrides individual row clicks
-    _ticker_sel_rows = (
-        list(range(len(_drill_display)))
-        if st.session_state.get(f"ticker_select_all_{_tdv}")
-        else _raw_sel_rows
     )
 
     # ── Multi-row summary panel ───────────────────────────────────────────────
