@@ -557,11 +557,6 @@ div[data-testid="stPlotlyChart"] > div {
     font-family: 'JetBrains Mono', monospace;
 }
 
-/* Ticker quick-access table */
-.ticker-click-hint {
-    font-size: 0.65rem; color: #2a4060; text-align: center;
-    letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 0 4px;
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -1656,35 +1651,6 @@ if "_nav_pending_tab" in st.session_state:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_dash:
     st.markdown('<p class="section-label"><i class="bi bi-grid-3x3-gap-fill bi-sm"></i>&nbsp; Executive Overview</p>', unsafe_allow_html=True)
-
-    # ── Clickable IOC list (ticker drill-down) ────────────────────────────────
-    # Lives inside Dashboard tab so it disappears the moment you navigate away.
-    if not iocs.empty:
-        st.markdown('<div class="ticker-click-hint">▼ Click any IOC to investigate in the IOC Hunt tab</div>', unsafe_allow_html=True)
-        _tck_iocs = iocs.head(20)
-        _tck_df = _tck_iocs[
-            [c for c in ["ioc_type", "value", "malware_family", "source_feed"] if c in _tck_iocs.columns]
-        ].copy()
-        _tck_df.columns = [c.replace("_", " ").title() for c in _tck_df.columns]
-        _tck_ver = st.session_state.get("_tck_ver", 0)
-        _tck_sel = st.dataframe(
-            _tck_df,
-            use_container_width=True,
-            hide_index=True,
-            height=155,
-            on_select="rerun",
-            selection_mode="single-row",
-            key=f"ticker_row_{_tck_ver}",
-        )
-        if _tck_sel and _tck_sel.selection and _tck_sel.selection.rows:
-            _t_row  = _tck_iocs.iloc[_tck_sel.selection.rows[0]]
-            _t_val  = str(_t_row.get("value", ""))
-            _t_type = str(_t_row.get("ioc_type", ""))
-            _t_fam  = str(_t_row.get("malware_family", ""))
-            if _t_val:
-                # Bump version so grid resets on next Dashboard visit
-                st.session_state["_tck_ver"] = _tck_ver + 1
-                _go_to_tab(4, nav_ioc_value=_t_val, nav_ioc_type=_t_type, nav_ioc_family=_t_fam)
 
     if reports.empty and iocs.empty and cves.empty:
         st.info("Collector is initialising feeds — check back in a few minutes.")
