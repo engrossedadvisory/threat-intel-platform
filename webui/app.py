@@ -1084,6 +1084,33 @@ def _cvss_badge(score) -> str:
     return f'<span class="badge-low">CVSS {s:.1f}</span>'
 
 
+def _go_to_tab(tab_idx: int, **filters) -> None:
+    """
+    Navigate to a tab by index, optionally pre-loading session-state filters.
+    Stores a pending nav index; the JS injector at the top of the tab block
+    picks it up and clicks the correct tab button in the browser.
+    """
+    for k, v in filters.items():
+        st.session_state[k] = v
+    st.session_state["_nav_pending_tab"] = tab_idx
+    st.rerun()
+
+
+def _nav_banner(label: str, clear_key: str, *state_keys: str) -> None:
+    """
+    Render a dismissible info banner at the top of a tab when navigated from a chart.
+    Clears all given session-state keys when the user dismisses it.
+    """
+    col_txt, col_btn = st.columns([9, 1])
+    with col_txt:
+        st.info(label)
+    with col_btn:
+        if st.button("✕ Clear", key=clear_key):
+            for k in state_keys:
+                st.session_state.pop(k, None)
+            st.rerun()
+
+
 def _enrichment_links(ioc_type: str, value: str) -> str:
     """Return HTML enrichment links for an IOC based on its type."""
     vt = f"https://www.virustotal.com/gui/search/{value}"
@@ -1423,27 +1450,20 @@ if not iocs.empty:
         "malware_family": "Malware / Family", "tags": "Tags",
     })
 
-    # ── Row header: label + clear button ─────────────────────────────────────
-    _tbl_col1, _tbl_col2 = st.columns([7, 1])
-    with _tbl_col1:
-        st.markdown(
-            '<p style="font-size:0.72rem;color:#3d5a80;text-transform:uppercase;'
-            'letter-spacing:0.08em;margin:6px 0 2px 0">'
-            '<i class="bi bi-table"></i>&nbsp; Click rows to drill down</p>',
-            unsafe_allow_html=True,
-        )
-    with _tbl_col2:
-        if st.button("⟳ Clear", key="clear_ticker_sel", help="Clear selection"):
-            st.session_state["ticker_drill_open"] = False
-            st.rerun()
-
+    # ── Click a row → navigate to IOC Hunt ───────────────────────────────────
+    st.markdown(
+        '<p style="font-size:0.72rem;color:#3d5a80;text-transform:uppercase;'
+        'letter-spacing:0.08em;margin:6px 0 2px 0">'
+        '<i class="bi bi-box-arrow-in-right"></i>&nbsp; Click a row to open it in IOC Hunt</p>',
+        unsafe_allow_html=True,
+    )
     _ticker_sel = st.dataframe(
         _drill_display,
         use_container_width=True,
         hide_index=True,
         height=130,
         on_select="rerun",
-        selection_mode="multi-row",
+        selection_mode="single-row",
         key="ticker_drill",
         column_config={
             "Type":              st.column_config.TextColumn(width="small"),
@@ -1453,141 +1473,20 @@ if not iocs.empty:
         },
     )
 
-    # ── Drill-down panel ──────────────────────────────────────────────────────
-    # Visibility is controlled by session state so the Clear button (and a
-    # page refresh, which wipes session state) reliably hides it.
+    # ── Navigate to IOC Hunt on row click ────────────────────────────────────
     _raw_rows = (
         _ticker_sel.selection.rows
         if _ticker_sel and hasattr(_ticker_sel, "selection")
         else []
     )
     if _raw_rows:
-        st.session_state["ticker_drill_open"] = True
-
-    _ticker_sel_rows = _raw_rows if st.session_state.get("ticker_drill_open") else []
-
-    # ── Multi-row summary panel ───────────────────────────────────────────────
-    if len(_ticker_sel_rows) > 1:
-        _multi_iocs = _ticker_iocs.iloc[_ticker_sel_rows]
-        _type_counts = _multi_iocs["ioc_type"].value_counts().to_dict() if "ioc_type" in _multi_iocs.columns else {}
-        _feed_counts = (_multi_iocs.get("source_feed") or _multi_iocs.get("feed", "")).value_counts().to_dict() if ("source_feed" in _multi_iocs.columns or "feed" in _multi_iocs.columns) else {}
-        _fam_counts  = _multi_iocs["malware_family"].value_counts().head(5).to_dict() if "malware_family" in _multi_iocs.columns else {}
-        _type_str    = " &nbsp;|&nbsp; ".join(f'<span style="color:#38bdf8">{k}</span> <span style="color:#6e7fa3">{v}</span>' for k, v in _type_counts.items())
-        _fam_str     = " &nbsp;|&nbsp; ".join(f'<span style="color:#c084fc">{k}</span>' for k in _fam_counts.keys()) if _fam_counts else "—"
-        st.markdown(
-            f'<div style="background:rgba(6,214,160,0.04);border:1px solid #06d6a022;'
-            f'border-left:4px solid #06d6a0;border-radius:6px;padding:10px 16px;margin:4px 0 8px 0">'
-            f'<div style="display:flex;gap:24px;flex-wrap:wrap;align-items:center">'
-            f'<div><div style="font-size:0.7rem;color:#3d5a80;text-transform:uppercase;letter-spacing:0.08em">Selected</div>'
-            f'<div style="font-size:1.1rem;color:#06d6a0;font-weight:700">{len(_ticker_sel_rows)}</div></div>'
-            f'<div><div style="font-size:0.7rem;color:#3d5a80;text-transform:uppercase;letter-spacing:0.08em">By Type</div>'
-            f'<div style="font-size:0.82rem">{_type_str}</div></div>'
-            f'<div style="flex:1;min-width:200px"><div style="font-size:0.7rem;color:#3d5a80;text-transform:uppercase;letter-spacing:0.08em">Top Families</div>'
-            f'<div style="font-size:0.82rem">{_fam_str}</div></div>'
-            f'</div></div>',
-            unsafe_allow_html=True,
+        _sel_ioc  = _ticker_iocs.iloc[_raw_rows[0]]
+        _go_to_tab(
+            4,  # IOC Hunt tab
+            nav_ioc_value  = str(_sel_ioc.get("value", "")),
+            nav_ioc_type   = str(_sel_ioc.get("ioc_type", "")),
+            nav_ioc_family = str(_sel_ioc.get("malware_family") or ""),
         )
-
-    elif _ticker_sel_rows:
-        _sel_idx  = _ticker_sel_rows[0]
-        _sel_ioc  = _ticker_iocs.iloc[_sel_idx]
-        _sel_val  = str(_sel_ioc.get("value", ""))
-        _sel_type = str(_sel_ioc.get("ioc_type", ""))
-        _sel_fam  = str(_sel_ioc.get("malware_family") or "Unknown")
-        _sel_feed = str(_sel_ioc.get("source_feed") or _sel_ioc.get("feed") or "")
-        _sel_tags = _sel_ioc.get("tags") or []
-        if isinstance(_sel_tags, str):
-            try: _sel_tags = json.loads(_sel_tags)
-            except Exception: _sel_tags = []
-
-        # Fetch parent report for summary
-        _sel_report_summary = ""
-        _sel_report_actor   = ""
-        _sel_report_ttps    = []
-        if not reports.empty and "id" in _ticker_iocs.columns:
-            _sel_rid = _sel_ioc.get("report_id")
-            if _sel_rid:
-                _sel_rpt = reports[reports["id"] == _sel_rid]
-                if not _sel_rpt.empty:
-                    _sel_report_summary = str(_sel_rpt.iloc[0].get("summary") or "")
-                    _sel_report_actor   = str(_sel_rpt.iloc[0].get("threat_actor") or "")
-                    _sel_ttps_raw = _sel_rpt.iloc[0].get("ttps") or []
-                    if isinstance(_sel_ttps_raw, list):
-                        _sel_report_ttps = _sel_ttps_raw[:6]
-
-        _sev_color = "#ff4d6d" if _sel_fam and _sel_fam != "Unknown" else "#ffd166"
-        st.markdown(
-            '<div style="background:rgba(6,214,160,0.04);border:1px solid #06d6a022;'
-            'border-left:4px solid ' + _sev_color + ';border-radius:6px;'
-            'padding:10px 16px;margin:4px 0 8px 0">'
-            '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">'
-            '<div>'
-            '<div style="font-size:0.7rem;color:#3d5a80;text-transform:uppercase;letter-spacing:0.08em">Type</div>'
-            '<div style="font-size:0.85rem;color:#38bdf8;font-weight:700">' + _sel_type.upper() + '</div>'
-            '</div>'
-            '<div style="flex:1;min-width:200px">'
-            '<div style="font-size:0.7rem;color:#3d5a80;text-transform:uppercase;letter-spacing:0.08em">IOC Value</div>'
-            '<div style="font-size:0.82rem;color:#c8d8f0;font-family:monospace;word-break:break-all">' + _sel_val + '</div>'
-            '</div>'
-            '<div>'
-            '<div style="font-size:0.7rem;color:#3d5a80;text-transform:uppercase;letter-spacing:0.08em">Malware Family</div>'
-            '<div style="font-size:0.82rem;color:#c084fc;font-weight:600">' + _sel_fam + '</div>'
-            '</div>'
-            '<div>'
-            '<div style="font-size:0.7rem;color:#3d5a80;text-transform:uppercase;letter-spacing:0.08em">Source Feed</div>'
-            '<div style="font-size:0.82rem;color:#6e7fa3">' + _sel_feed + '</div>'
-            '</div>'
-            + (
-                '<div><div style="font-size:0.7rem;color:#3d5a80;text-transform:uppercase;letter-spacing:0.08em">Tags</div>'
-                '<div style="font-size:0.78rem;color:#6e7fa3">' + ', '.join(str(t) for t in _sel_tags[:5]) + '</div></div>'
-                if _sel_tags else ''
-            )
-            + (
-                '<div style="flex:2;min-width:250px"><div style="font-size:0.7rem;color:#3d5a80;text-transform:uppercase;letter-spacing:0.08em">Actor</div>'
-                '<div style="font-size:0.82rem;color:#ff8c42">' + _sel_report_actor + '</div></div>'
-                if _sel_report_actor and _sel_report_actor != "Unknown" else ''
-            )
-            + '</div>'
-            + (
-                '<div style="font-size:0.78rem;color:#8aa0c0;margin-top:6px;line-height:1.5;border-top:1px solid #1e3a5f;padding-top:6px">'
-                + _sel_report_summary + '</div>'
-                if _sel_report_summary else ''
-            )
-            + (
-                '<div style="margin-top:6px">'
-                + ' '.join('<span class="ttp-tag">' + t + '</span>' for t in _sel_report_ttps)
-                + '</div>'
-                if _sel_report_ttps else ''
-            )
-            + '</div>',
-            unsafe_allow_html=True,
-        )
-
-        # ── AI synopsis ───────────────────────────────────────────────────────
-        with st.spinner("Generating AI threat synopsis…"):
-            _synopsis = ai_ioc_synopsis(
-                ioc_type       = _sel_type,
-                ioc_value      = _sel_val,
-                malware_family = _sel_fam,
-                source_feed    = _sel_feed,
-                report_summary = _sel_report_summary,
-                actor          = _sel_report_actor,
-            )
-        if _synopsis and not _synopsis.startswith("⚠️"):
-            st.markdown(
-                '<div style="background:rgba(56,189,248,0.06);border:1px solid #38bdf822;'
-                'border-left:3px solid #38bdf8;border-radius:6px;'
-                'padding:10px 16px;margin-top:4px">'
-                '<div style="font-size:0.68rem;color:#3d5a80;text-transform:uppercase;'
-                'letter-spacing:0.08em;margin-bottom:5px">'
-                '<i class="bi bi-cpu-fill" style="color:#38bdf8"></i>&nbsp; AI Threat Synopsis</div>'
-                '<div style="font-size:0.82rem;color:#8aa0c0;line-height:1.65">'
-                + _synopsis +
-                '</div></div>',
-                unsafe_allow_html=True,
-            )
-        elif _synopsis.startswith("⚠️"):
-            st.caption(_synopsis)
 
 # ─── Top KPI strip ────────────────────────────────────────────────────────────
 k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
@@ -1607,6 +1506,21 @@ with k6: st.metric("Active Feeds",    f"{active_f} / {total_f}")
 with k7: st.metric("⚑ Open Alerts",   f"{open_hits:,}")
 
 st.divider()
+
+# ─── Tab navigation (JS click) ───────────────────────────────────────────────
+# _go_to_tab() stores "_nav_pending_tab" then reruns. On the rerun we land
+# here, inject a tiny iframe script that clicks the target tab button, then
+# pop the key so it only fires once.
+if "_nav_pending_tab" in st.session_state:
+    import streamlit.components.v1 as _cmpv1
+    _ni = st.session_state.pop("_nav_pending_tab")
+    _cmpv1.html(
+        f"<script>(function(){{var t=0;function c(){{"
+        f"var b=window.parent.document.querySelectorAll('button[role=\"tab\"]');"
+        f"if(b[{_ni}]){{b[{_ni}].click();}}else if(t++<20){{setTimeout(c,100);}}}};c();}})();"
+        f"</script>",
+        height=0, scrolling=False,
+    )
 
 # ─── Tabs ─────────────────────────────────────────────────────────────────────
 (tab_dash, tab_advisor, tab_feed, tab_actors, tab_iocs,
@@ -1749,24 +1663,14 @@ with tab_dash:
                             if _tl_pt.get("customdata") else None
                         )
                         if not _drill_tl_feed:
-                            # Try to match by trace index against source_feed order
                             _tl_src_order = _tl_grp["source_feed"].unique().tolist()
                             _tl_ti = _tl_pt.get("curveNumber", -1)
                             if 0 <= _tl_ti < len(_tl_src_order):
                                 _drill_tl_feed = _tl_src_order[_tl_ti]
                     if _drill_tl_feed:
-                        _tl_feed_rpts = reports[reports["source_feed"] == _drill_tl_feed]
-                        st.markdown(
-                            f'<div class="metric-card" style="border-left:3px solid #38bdf8">'
-                            f'<b style="color:#c8d8f0">{_drill_tl_feed}</b> \u2014 '
-                            f'{len(_tl_feed_rpts):,} reports</div>',
-                            unsafe_allow_html=True)
-                        _tl_cols = [c for c in ["created_at","threat_actor","summary","confidence_score"]
-                                    if c in _tl_feed_rpts.columns]
-                        st.dataframe(_tl_feed_rpts[_tl_cols].head(15),
-                                     use_container_width=True, hide_index=True)
+                        _go_to_tab(2, nav_feed_filter=_drill_tl_feed)  # Threat Feed
                     else:
-                        st.caption("Click an area or point to drill into that feed's reports")
+                        st.caption("Click an area or point to open that feed in Threat Feed")
                 else:
                     st.info("No timeline data in last 30 days.")
             else:
@@ -1791,18 +1695,10 @@ with tab_dash:
                 if _ioc_sel and _ioc_sel.selection and _ioc_sel.selection.points:
                     _drill_ioc_type = _ioc_sel.selection.points[0].get("label")
                 if _drill_ioc_type:
-                    _ioc_drill_df = iocs[iocs["ioc_type"] == _drill_ioc_type]
-                    st.markdown(
-                        f'<div class="section-label" style="margin-top:8px;">'
-                        f'<i class="bi bi-funnel-fill"></i>&nbsp; '
-                        f'{len(_ioc_drill_df):,} <b>{_drill_ioc_type}</b> IOCs</div>',
-                        unsafe_allow_html=True)
-                    _show_cols = [c for c in ["value", "malware_family", "tags"] if c in _ioc_drill_df.columns]
-                    st.dataframe(_ioc_drill_df[_show_cols].head(20),
-                                 use_container_width=True, hide_index=True)
+                    _go_to_tab(4, nav_ioc_type=_drill_ioc_type)  # IOC Hunt
                 else:
                     _top_ioc_type = by_type.sort_values("count", ascending=False).iloc[0]["ioc_type"] if not by_type.empty else ""
-                    st.caption(f"Click a slice to drill into IOCs · Largest: **{_top_ioc_type}**")
+                    st.caption(f"Click a slice to open that IOC type in IOC Hunt · Largest: **{_top_ioc_type}**")
             else:
                 st.info("No IOC data yet.")
 
@@ -1840,31 +1736,9 @@ with tab_dash:
                     if _actor_sel and _actor_sel.selection and _actor_sel.selection.points:
                         _drill_actor = _actor_sel.selection.points[0].get("y")
                     if _drill_actor:
-                        _adrill = reports[reports["threat_actor"] == _drill_actor]
-                        _adrill_iocs = iocs[iocs["report_id"].isin(_adrill["id"])] if not iocs.empty else pd.DataFrame()
-                        st.markdown(
-                            f'<div class="section-label"><i class="bi bi-person-badge-fill"></i>'
-                            f'&nbsp; Actor drill-down: <b>{_drill_actor}</b> — '
-                            f'{len(_adrill)} reports · {len(_adrill_iocs)} IOCs</div>',
-                            unsafe_allow_html=True)
-                        _ad1, _ad2 = st.columns(2)
-                        with _ad1:
-                            st.markdown("**Recent reports**")
-                            for _, _ar in _adrill.head(5).iterrows():
-                                _ar_ts = _ar["created_at"].strftime("%Y-%m-%d") if hasattr(_ar["created_at"], "strftime") else "?"
-                                st.markdown(
-                                    f'<span class="feed-tag">{str(_ar.get("source_feed","")).upper()}</span> '
-                                    f'{_severity_badge(int(_ar.get("confidence_score") or 0))} '
-                                    f'<span style="color:#9aabb8;font-size:0.8rem">{str(_ar.get("summary",""))[:120]}</span> '
-                                    f'<span style="color:#3d5a80;font-size:0.72rem">{_ar_ts}</span>',
-                                    unsafe_allow_html=True)
-                        with _ad2:
-                            if not _adrill_iocs.empty:
-                                st.markdown("**Attributed IOCs**")
-                                _ioc_cols = [c for c in ["ioc_type","value","malware_family"] if c in _adrill_iocs.columns]
-                                st.dataframe(_adrill_iocs[_ioc_cols].head(10), use_container_width=True, hide_index=True)
+                        _go_to_tab(3, nav_actor_filter=_drill_actor)  # Actors tab
                     else:
-                        st.caption("Click a bar to drill into that actor's reports and IOCs")
+                        st.caption("Click a bar to open that actor's profile")
                 else:
                     st.info("Actor data populates as AI enrichment runs.")
             else:
@@ -1896,27 +1770,10 @@ with tab_dash:
                 _drill_tactic = None
                 if _tac_sel and _tac_sel.selection and _tac_sel.selection.points:
                     _drill_tactic = _tac_sel.selection.points[0].get("y")
-                if _drill_tactic and not techniques_df.empty:
-                    _tac_techs = techniques_df[
-                        techniques_df["tactic"].str.contains(_drill_tactic, na=False, case=False)
-                    ].copy()
-                    _tac_techs["observations"] = _tac_techs["technique_id"].map(
-                        lambda t: ttp_usage.get(t, {}).get("count", 0) if isinstance(ttp_usage.get(t), dict) else ttp_usage.get(t, 0)
-                    )
-                    _tac_techs = _tac_techs[_tac_techs["observations"] > 0].sort_values("observations", ascending=False)
-                    st.markdown(
-                        f'<div class="section-label"><i class="bi bi-diagram-3-fill icon-purple"></i>'
-                        f'&nbsp; Tactic: <b>{_drill_tactic}</b> — {len(_tac_techs)} observed techniques</div>',
-                        unsafe_allow_html=True)
-                    for _, _tt in _tac_techs.head(8).iterrows():
-                        st.markdown(
-                            f'<span class="ttp-tag">{_tt["technique_id"]}</span> '
-                            f'<b style="color:#c8d8f0">{_tt["name"]}</b> '
-                            f'<span style="color:#38bdf8;font-family:monospace;font-size:0.78rem">'
-                            f'{int(_tt["observations"])}× observed</span>',
-                            unsafe_allow_html=True)
+                if _drill_tactic:
+                    _go_to_tab(6, nav_attack_tactic=_drill_tactic)  # ATT&CK tab
                 else:
-                    st.caption("Click a bar to see techniques within that tactic")
+                    st.caption("Click a bar to open that tactic in ATT&CK")
             else:
                 st.info("ATT&CK TTP mapping populates as the AI enrichment runs.")
 
@@ -1965,31 +1822,12 @@ with tab_dash:
                 _map_pt_idx = _map_pt.get("point_index", -1)
                 if 0 <= _map_pt_idx < len(_geo_df):
                     _drill_map_country = _geo_df.iloc[_map_pt_idx]["country"]
+            _top_countries = _geo_df["country"].value_counts().head(5)
+            _cc_parts = [f"**{c}** {n}" for c, n in _top_countries.items()]
             if _drill_map_country:
-                _country_ips = set(
-                    _geo_df[_geo_df["country"] == _drill_map_country]["query"].tolist()
-                )
-                _country_iocs = iocs[iocs["value"].isin(_country_ips)]
-                _country_rpts = reports[reports["source_feed"].isin(
-                    _country_iocs["report_id"].map(
-                        dict(zip(iocs["id"], iocs.get("report_id", iocs.index)))
-                    ).dropna().astype(int).tolist()
-                )] if "report_id" in iocs.columns else pd.DataFrame()
-                st.markdown(
-                    f'<div class="metric-card" style="border-left:3px solid #38bdf8">'
-                    f'\U0001f30d <b style="color:#c8d8f0">{_drill_map_country}</b> \u2014 '
-                    f'{len(_country_ips)} unique IP(s), {len(_country_iocs)} IOC(s)</div>',
-                    unsafe_allow_html=True)
-                _geo_ioc_cols = [c for c in ["ioc_type","value","malware_family"] if c in _country_iocs.columns]
-                st.dataframe(_country_iocs[_geo_ioc_cols].head(20),
-                             use_container_width=True, hide_index=True)
-                _top_countries = _geo_df["country"].value_counts().head(5)
-                _cc_parts = [f"**{c}** {n}" for c, n in _top_countries.items()]
-                st.caption("Top origins: " + " \u00b7 ".join(_cc_parts))
+                _go_to_tab(4, nav_ioc_country=_drill_map_country)  # IOC Hunt
             else:
-                _top_countries = _geo_df["country"].value_counts().head(5)
-                _cc_parts = [f"**{c}** {n}" for c, n in _top_countries.items()]
-                st.caption("Top origins: " + " \u00b7 ".join(_cc_parts) + " \u00b7 Click a bubble to see IOCs from that country")
+                st.caption("Top origins: " + " \u00b7 ".join(_cc_parts) + " \u00b7 Click a bubble to open those IPs in IOC Hunt")
         else:
             # Offline fallback: country bar from available CVE data
             st.markdown(
@@ -2025,40 +1863,17 @@ with tab_dash:
                 _np = _net_sel.selection.points[0]
                 _drill_node = _np.get("text") or _np.get("hovertext") or ""
             if _drill_node and _drill_node.strip():
-                # Determine node type by matching against known data
                 _drill_node_clean = str(_drill_node).strip()
                 _known_feeds  = set(reports["source_feed"].dropna().unique())
                 _known_actors = set(reports["threat_actor"].dropna().unique())
-                _node_reports = pd.DataFrame()
-                _node_label   = _drill_node_clean
                 if _drill_node_clean in _known_feeds:
-                    _node_reports = reports[reports["source_feed"] == _drill_node_clean]
-                    _node_label   = f"Feed: {_drill_node_clean}"
+                    _go_to_tab(2, nav_feed_filter=_drill_node_clean)    # Threat Feed
                 elif _drill_node_clean in _known_actors:
-                    _node_reports = reports[reports["threat_actor"] == _drill_node_clean]
-                    _node_label   = f"Actor: {_drill_node_clean}"
+                    _go_to_tab(3, nav_actor_filter=_drill_node_clean)   # Actors
                 else:
-                    # TTP — search in ttps JSON field
-                    _node_reports = reports[
-                        reports["ttps"].apply(
-                            lambda t: _drill_node_clean in (t if isinstance(t, list) else [])
-                        )
-                    ] if "ttps" in reports.columns else pd.DataFrame()
-                    _node_label = f"TTP: {_drill_node_clean}"
-                if not _node_reports.empty:
-                    st.markdown(
-                        f'<div class="metric-card" style="border-left:3px solid #818cf8">'
-                        f'<b style="color:#c8d8f0">{_node_label}</b> \u2014 '
-                        f'{len(_node_reports)} report(s)</div>',
-                        unsafe_allow_html=True)
-                    _nc = [c for c in ["created_at","source_feed","threat_actor","summary","confidence_score"]
-                           if c in _node_reports.columns]
-                    st.dataframe(_node_reports[_nc].head(10),
-                                 use_container_width=True, hide_index=True)
-                else:
-                    st.caption(f"No report data found for node: {_drill_node_clean}")
+                    _go_to_tab(6, nav_attack_tactic=_drill_node_clean)  # ATT&CK (TTP)
             else:
-                st.caption("Click any node to explore \u2014 Red=actors \u00b7 Cyan=feeds \u00b7 Purple=TTPs \u00b7 Green=industries")
+                st.caption("Click any node to open its detail page — Red=actors · Cyan=feeds · Purple=TTPs · Green=industries")
             st.divider()
 
         # ── Row 3: CVE severity + Watchlist alert trend ───────────────────────
@@ -2094,19 +1909,10 @@ with tab_dash:
                 if _cve_sel and _cve_sel.selection and _cve_sel.selection.points:
                     _drill_sev = _cve_sel.selection.points[0].get("x")
                 if _drill_sev:
-                    _cve_filtered = cves_copy[cves_copy["Severity"] == _drill_sev].sort_values("cvss_score", ascending=False)
-                    st.markdown(
-                        f'<div class="section-label"><i class="bi bi-bug-fill icon-error"></i>'
-                        f'&nbsp; {_drill_sev} CVEs ({len(_cve_filtered):,})</div>',
-                        unsafe_allow_html=True)
-                    _cve_show_cols = [c for c in ["cve_id","cvss_score","vendor","product","cisa_due_date","is_kev"] if c in _cve_filtered.columns]
-                    st.dataframe(_cve_filtered[_cve_show_cols].head(15),
-                                 use_container_width=True, hide_index=True,
-                                 column_config={"is_kev": st.column_config.CheckboxColumn("KEV"),
-                                                "cvss_score": st.column_config.NumberColumn("CVSS", format="%.1f")})
+                    _go_to_tab(5, nav_cve_severity=_drill_sev)  # CVE Tracker
                 else:
                     _kev_pct = f"{(kev_count/len(cves)*100):.1f}%" if len(cves) > 0 else "—"
-                    st.caption(f"Click a bar to see CVEs of that severity · {kev_count:,} CISA KEV ({_kev_pct})")
+                    st.caption(f"Click a bar to open that severity in CVE Tracker · {kev_count:,} CISA KEV ({_kev_pct})")
             else:
                 st.info("CVE data loading…")
 
@@ -2133,21 +1939,9 @@ with tab_dash:
                         _hbpt = _hit_bar_sel.selection.points[0]
                         _drill_hit_date = str(_hbpt.get("x", ""))[:10]
                         if _drill_hit_date:
-                            _dhits = hits_df[
-                                pd.to_datetime(hits_df["found_at"], utc=True, errors="coerce")
-                                  .dt.strftime("%Y-%m-%d") == _drill_hit_date
-                            ]
-                            st.markdown(
-                                f'<div class="metric-card" style="border-left:3px solid #ffd166">'
-                                f'<b style="color:#c8d8f0">Hits on {_drill_hit_date}</b> \u2014 '
-                                f'{len(_dhits)} alert(s)</div>',
-                                unsafe_allow_html=True)
-                            _dhcols = [c for c in ["hit_type","severity","source_feed","matched_value","context","found_at"]
-                                       if c in _dhits.columns]
-                            st.dataframe(_dhits[_dhcols].head(20),
-                                         use_container_width=True, hide_index=True)
+                            _go_to_tab(9, nav_watchlist_date=_drill_hit_date)  # Watchlist
                     else:
-                        st.caption(f"{open_hits:,} unacknowledged \u00b7 Click a bar to see that day's hits")
+                        st.caption(f"{open_hits:,} unacknowledged · Click a bar to open that day in Watchlist")
                 else:
                     st.info("No watchlist hits in the last 14 days.")
             else:
@@ -2261,6 +2055,12 @@ with tab_dash:
 with tab_feed:
     st.markdown('<p class="section-label"><i class="bi bi-lightning-fill bi-sm icon-error"></i>&nbsp; Active Threat Reports</p>', unsafe_allow_html=True)
 
+    # Nav banner when jumping from a dashboard chart
+    if "nav_feed_filter" in st.session_state:
+        _nff = st.session_state["nav_feed_filter"]
+        _nav_banner(f"Filtered from Dashboard — Feed: **{_nff}**", "clear_nav_feed", "nav_feed_filter")
+        st.session_state.setdefault("ff_src", [_nff])
+
     if reports.empty:
         st.info("Collector is initialising feeds — check back in a few minutes.")
     else:
@@ -2356,6 +2156,11 @@ with tab_feed:
 with tab_actors:
     st.markdown('<p class="section-label"><i class="bi bi-person-badge-fill bi-sm icon-accent"></i>&nbsp; Threat Actor Profiles</p>', unsafe_allow_html=True)
 
+    # Nav banner when jumping from a dashboard chart
+    if "nav_actor_filter" in st.session_state:
+        _naf = st.session_state["nav_actor_filter"]
+        _nav_banner(f"Filtered from Dashboard — Actor: **{_naf}**", "clear_nav_actor", "nav_actor_filter")
+
     if reports.empty:
         st.info("No threat data yet.")
     else:
@@ -2448,6 +2253,20 @@ with tab_actors:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_iocs:
     st.markdown('<p class="section-label"><i class="bi bi-search bi-sm icon-accent"></i>&nbsp; IOC Hunt &amp; Enrichment</p>', unsafe_allow_html=True)
+
+    # Nav banner when jumping from a dashboard chart
+    _nav_ioc_context = (
+        st.session_state.get("nav_ioc_value") or
+        st.session_state.get("nav_ioc_type") or
+        st.session_state.get("nav_ioc_country")
+    )
+    if _nav_ioc_context:
+        _nav_lbl = (
+            f"Navigated from ticker — IOC: **{st.session_state.get('nav_ioc_value')}** ({st.session_state.get('nav_ioc_type','')})" if st.session_state.get("nav_ioc_value")
+            else f"Filtered from Dashboard — Type: **{st.session_state.get('nav_ioc_type')}**" if st.session_state.get("nav_ioc_type")
+            else f"Filtered from Dashboard — Country: **{st.session_state.get('nav_ioc_country')}**"
+        )
+        _nav_banner(_nav_lbl, "clear_nav_ioc", "nav_ioc_value", "nav_ioc_type", "nav_ioc_country", "nav_ioc_family")
 
     if iocs.empty:
         st.info("No IOCs collected yet.")
@@ -2752,6 +2571,14 @@ with tab_iocs:
 with tab_cves:
     st.markdown('<p class="section-label"><i class="bi bi-bug-fill bi-sm icon-error"></i>&nbsp; CVE Tracker</p>', unsafe_allow_html=True)
 
+    # Nav banner when jumping from a dashboard chart
+    if "nav_cve_severity" in st.session_state:
+        _ncvs = st.session_state["nav_cve_severity"]
+        _nav_banner(f"Filtered from Dashboard — Severity: **{_ncvs}**", "clear_nav_cve", "nav_cve_severity")
+        # Pre-populate CVSS slider for that severity tier
+        _sev_cvss = {"Critical": 9.0, "High": 7.0, "Medium": 4.0, "Low": 0.0}.get(_ncvs, 0.0)
+        st.session_state.setdefault("cve_cvss", _sev_cvss)
+
     if cves.empty:
         st.info("CVE data loading from CISA KEV and NVD feeds…")
     else:
@@ -2844,6 +2671,11 @@ with tab_cves:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_attack:
     st.markdown('<p class="section-label"><i class="bi bi-diagram-3-fill bi-sm icon-purple"></i>&nbsp; MITRE ATT&amp;CK Mapping &amp; Remediation</p>', unsafe_allow_html=True)
+
+    # Nav banner when jumping from a dashboard chart
+    if "nav_attack_tactic" in st.session_state:
+        _nat = st.session_state["nav_attack_tactic"]
+        _nav_banner(f"Filtered from Dashboard — Tactic / TTP: **{_nat}**", "clear_nav_attack", "nav_attack_tactic")
 
     if techniques_df.empty:
         st.info("ATT&CK data not loaded yet — collector populates this on its first 24-hour cycle.")
@@ -3359,6 +3191,11 @@ with tab_darkweb:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_watchlist:
     st.markdown('<p class="section-label"><i class="bi bi-crosshair bi-sm icon-accent"></i>&nbsp; Asset Watchlist</p>', unsafe_allow_html=True)
+
+    # Nav banner when jumping from a dashboard chart
+    if "nav_watchlist_date" in st.session_state:
+        _nwd = st.session_state["nav_watchlist_date"]
+        _nav_banner(f"Filtered from Dashboard — Hits on: **{_nwd}**", "clear_nav_wl", "nav_watchlist_date")
 
     wl_c1, wl_c2 = st.columns([3, 1])
     with wl_c2:
