@@ -2179,7 +2179,7 @@ with tab_feed:
             if st.button("✕ Clear", key="clear_nav_feed"):
                 st.session_state.pop("nav_feed_filter", None)
                 st.rerun()
-        st.session_state.setdefault("ff_src", [_nff])
+        st.session_state["ff_src"] = [_nff]  # Force-select the feed in the multiselect below
         # Opt-in AI summary for this feed
         _feed_ai_key = f"feed_ai_{_nff}"
         if _feed_ai_key not in st.session_state:
@@ -2838,7 +2838,7 @@ with tab_cves:
                 st.rerun()
         # Pre-populate CVSS slider for that severity tier
         _sev_cvss = {"Critical": 9.0, "High": 7.0, "Medium": 4.0, "Low": 0.0}.get(_ncvs, 0.0)
-        st.session_state.setdefault("cve_cvss", _sev_cvss)
+        st.session_state["cve_cvss"] = _sev_cvss  # Force-set the CVSS slider below
 
     if cves.empty:
         st.info("CVE data loading from CISA KEV and NVD feeds…")
@@ -3041,7 +3041,11 @@ with tab_attack:
                     st.caption("Click any cell to see technique details and mitigations · Color = observation frequency")
 
         # ── Observed techniques ────────────────────────────────────────────────
-        st.markdown("#### Observed Techniques")
+        _nav_tactic_filter = st.session_state.get("nav_attack_tactic", "")
+        st.markdown(
+            f"#### Observed Techniques"
+            + (f" — filtered to **{_nav_tactic_filter}**" if _nav_tactic_filter else "")
+        )
         if obs_tech.empty:
             st.info("TTPs populate as the AI enrichment runs. Come back after a few collector cycles.")
         else:
@@ -3052,13 +3056,22 @@ with tab_attack:
                 lambda t: ", ".join(sorted(ttp_usage.get(t, {}).get("actors", set())))
             )
             obs_tech = obs_tech.sort_values("threat_count", ascending=False)
+            # Filter to pinned tactic when navigating from Dashboard
+            if _nav_tactic_filter:
+                _tac_mask = obs_tech["tactic"].fillna("").str.contains(
+                    _nav_tactic_filter, case=False, na=False
+                )
+                _tac_subset = obs_tech[_tac_mask]
+                obs_tech = _tac_subset if not _tac_subset.empty else obs_tech
 
             for _, tech in obs_tech.iterrows():
                 tid = tech["technique_id"]
+                _is_tac_match = bool(_nav_tactic_filter) and str(tech.get("tactic","")).lower().find(_nav_tactic_filter.lower()) >= 0
                 with st.expander(
                     f"**{tid}** — {tech['name']}  |  "
                     f"Tactic: {tech.get('tactic','?')}  |  "
-                    f"Seen {tech['threat_count']}×"
+                    f"Seen {tech['threat_count']}×",
+                    expanded=_is_tac_match,
                 ):
                     cl, cr = st.columns([2, 3])
                     with cl:
