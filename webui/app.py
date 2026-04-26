@@ -1424,13 +1424,13 @@ if not iocs.empty:
     })
 
     # ── Row header: select-all checkbox + label + clear button ───────────────
+    _tdv = st.session_state.get("ticker_drill_ver", 0)  # version key — changes on Clear
     _tbl_col0, _tbl_col1, _tbl_col2 = st.columns([1, 5, 1])
     with _tbl_col0:
         _select_all = st.checkbox(
             "All",
-            key="ticker_select_all",
+            key=f"ticker_select_all_{_tdv}",   # versioned — resets to False on Clear
             help="Select all IOCs",
-            value=st.session_state.get("ticker_select_all", False),
         )
     with _tbl_col1:
         st.markdown(
@@ -1441,8 +1441,7 @@ if not iocs.empty:
         )
     with _tbl_col2:
         if st.button("⟳ Clear", key="clear_ticker_sel", help="Clear selection"):
-            st.session_state["ticker_drill_ver"] = st.session_state.get("ticker_drill_ver", 0) + 1
-            st.session_state["ticker_select_all"] = False
+            st.session_state["ticker_drill_ver"] = _tdv + 1
             st.rerun()
 
     _ticker_sel = st.dataframe(
@@ -1452,7 +1451,7 @@ if not iocs.empty:
         height=130,
         on_select="rerun",
         selection_mode="multi-row",
-        key=f"ticker_drill_{st.session_state.get('ticker_drill_ver', 0)}",
+        key=f"ticker_drill_{_tdv}",
         column_config={
             "Type":              st.column_config.TextColumn(width="small"),
             "IOC Value":         st.column_config.TextColumn(width="large"),
@@ -1470,7 +1469,7 @@ if not iocs.empty:
     # "Select All" overrides individual row clicks
     _ticker_sel_rows = (
         list(range(len(_drill_display)))
-        if st.session_state.get("ticker_select_all")
+        if st.session_state.get(f"ticker_select_all_{_tdv}")
         else _raw_sel_rows
     )
 
