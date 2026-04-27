@@ -1619,14 +1619,19 @@ _NAV_ICONS = [
 if "active_page" not in st.session_state:
     st.session_state["active_page"] = "Dashboard"
 if "_nav_select" not in st.session_state:
-    st.session_state["_nav_select"] = 0
+    st.session_state["_nav_select"] = -1   # -1 = no programmatic override
+
+# Consume _nav_select as a one-shot jump signal, then reset to -1 so
+# subsequent user clicks are NOT overridden by manual_select.
+_manual_sel = st.session_state["_nav_select"]
+st.session_state["_nav_select"] = -1       # reset immediately before render
 
 active_page = option_menu(
     menu_title=None,
     options=_NAV_PAGES,
     icons=_NAV_ICONS,
     orientation="horizontal",
-    manual_select=st.session_state["_nav_select"],
+    manual_select=_manual_sel,             # -1 = follow user; ≥0 = jump once
     key="main_nav",
     styles={
         "container": {
@@ -1651,10 +1656,8 @@ active_page = option_menu(
         "nav-link:hover": {"color": "#c8d8f0"},
     },
 )
-# Keep active_page and _nav_select in sync with user clicks
-if active_page != st.session_state.get("active_page"):
-    st.session_state["active_page"] = active_page
-    st.session_state["_nav_select"] = _NAV_PAGES.index(active_page)
+# Always keep active_page in sync (user click or programmatic jump)
+st.session_state["active_page"] = active_page
 
 
 # ══════════════════════════════════════════════════════════════════════════════
