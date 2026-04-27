@@ -827,6 +827,11 @@ def main():
     now = time.time()
     for feed in ALL_FEEDS:
         _next_run[feed.name] = now
+    # Enrichment runs every 5 min to stay within the VT 500 calls/day free tier.
+    # With batch_size=10 and priority routing (GreyNoise first for IPs), actual
+    # VT calls are well below the cap even at this cadence.
+    _ENRICH_INTERVAL = 300   # seconds between enrichment batches
+    _next_enrich = 0.0       # run immediately on first loop
 
     while True:
         now = time.time()
@@ -840,11 +845,14 @@ def main():
             # After feeds, run AI enrichment on un-analyzed reports
             _enrich_missing_ttps(db, batch_size=10)
 
-            # IOC enrichment (VirusTotal, GreyNoise, Shodan)
-            try:
-                enrich_batch(db, batch_size=10)
-            except Exception as e:
-                log.debug(f"[enrichment] skipped: {e}")
+            # IOC enrichment (VirusTotal, GreyNoise, Shodan) — rate-throttled
+            if now >= _next_enrich:
+                try:
+                    enrich_batch(db, batch_size=10)
+                    _next_enrich = time.time() + _ENRICH_INTERVAL
+                except Exception as e:
+                    log.debug(f"[enrichment] skipped: {e}")
+                    _next_enrich = time.time() + _ENRICH_INTERVAL
 
             # Check new IOCs against watchlist
             try:

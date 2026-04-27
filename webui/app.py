@@ -4912,7 +4912,45 @@ with tab_admin:
 <div class="admin-save-success">
   <i class="bi bi-check-circle-fill"></i> Enrichment keys saved — collector will use them on next run.
 </div>""", unsafe_allow_html=True)
-                st.session_state["adm_enr_save_ok"] = False
+
+        # ── VT daily budget meter ─────────────────────────────────────────────
+        try:
+            from sqlalchemy import text as _vt_text
+            _today_utc = datetime.now(timezone.utc).replace(
+                hour=0, minute=0, second=0, microsecond=0)
+            _vt_engine = get_engine()
+            with _vt_engine.connect() as _vc:
+                _vt_used_today = _vc.execute(
+                    _vt_text(
+                        "SELECT COUNT(*) FROM ioc_enrichments "
+                        "WHERE source='virustotal' AND enriched_at >= :since"
+                    ),
+                    {"since": _today_utc},
+                ).scalar() or 0
+            _vt_limit = 450
+            _vt_pct   = min(100, int(_vt_used_today / _vt_limit * 100))
+            _vt_color = "#06d6a0" if _vt_pct < 60 else ("#ffd166" if _vt_pct < 85 else "#ff4d6d")
+            st.markdown(
+                f'<div style="margin-top:14px">'
+                f'<div style="font-size:0.7rem;color:#4a6080;font-weight:700;'
+                f'text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px">'
+                f'<i class="bi bi-shield-check"></i>&nbsp; VirusTotal API Budget Today</div>'
+                f'<div style="background:#0a1428;border:1px solid #0f2040;border-radius:6px;'
+                f'height:10px;overflow:hidden;">'
+                f'<div style="width:{_vt_pct}%;height:100%;background:{_vt_color};'
+                f'border-radius:6px;transition:width .4s"></div></div>'
+                f'<div style="font-size:0.72rem;color:{_vt_color};margin-top:3px;'
+                f'font-family:\'JetBrains Mono\',monospace;">'
+                f'{_vt_used_today} / {_vt_limit} calls used '
+                f'({_vt_limit - _vt_used_today} remaining) · resets at UTC midnight</div>'
+                f'<div style="font-size:0.65rem;color:#2a4060;margin-top:2px">'
+                f'IPs → GreyNoise first · VT skipped for benign IPs · '
+                f'benign results cached 7 days</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        except Exception:
+            pass
 
     # ── Alert Channels ────────────────────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
