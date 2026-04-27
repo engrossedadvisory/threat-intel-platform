@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from sqlalchemy import create_engine
 from streamlit_autorefresh import st_autorefresh
+from streamlit_option_menu import option_menu
 
 st.set_page_config(
     page_title="VANTELLIGENCE",
@@ -1104,9 +1105,9 @@ def _set_drill(entity_type: str, entity_value: str,
     # Pre-set all nav filter keys so target tab sees them immediately
     for k, v in context.items():
         st.session_state[k] = v
-    # Queue JS tab click for next render
+    # Drive option_menu to the target page — 100% reliable, no JS needed
     if target_tab_idx is not None:
-        st.session_state["_nav_pending_tab"] = target_tab_idx
+        st.session_state["_nav_select"] = target_tab_idx
     st.rerun()
 
 
@@ -1235,7 +1236,7 @@ def _render_drill_panel() -> None:
                 type="primary",
                 use_container_width=True,
             ):
-                st.session_state["_nav_pending_tab"] = tidx
+                st.session_state["_nav_select"] = tidx
                 for k, v in extra.items():
                     st.session_state[k] = v
                 st.rerun()
@@ -1604,52 +1605,62 @@ st.divider()
 # Drill Panel intentionally NOT auto-rendered here.
 # AI analysis is opt-in via buttons within each target tab.
 
-# ─── JS tab navigation ────────────────────────────────────────────────────────
-# Fires when a drill-down sets _nav_pending_tab. Uses window.parent to reach
-# the Streamlit page and click the right tab button.
-if "_nav_pending_tab" in st.session_state:
-    import streamlit.components.v1 as _cmpv1
-    _ni = st.session_state.pop("_nav_pending_tab")
-    _cmpv1.html(
-        f"""<script>
-(function(){{
-  var idx={_ni}, tries=0;
-  function go(){{
-    var tabs=(
-      window.parent.document.querySelectorAll('button[role="tab"]').length
-        ? window.parent.document.querySelectorAll('button[role="tab"]')
-        : window.parent.document.querySelectorAll('[data-baseweb="tab"]')
-    );
-    if(tabs && tabs[idx]){{
-      tabs[idx].dispatchEvent(new MouseEvent('click',{{bubbles:true,cancelable:true}}));
-      tabs[idx].click();
-    }} else if(tries++<40){{
-      setTimeout(go, 150);
-    }}
-  }}
-  go();
-}})();
-</script>""",
-        height=30, scrolling=False,
-    )
+# ─── Main navigation (option_menu — programmatic selection via _nav_select) ──
+_NAV_PAGES = [
+    "Dashboard", "Threat Advisor", "Threat Feed", "Actors",
+    "IOC Hunt", "CVE Tracker", "ATT&CK", "AI Analyst", "Dark Web",
+    "Watchlist", "Alerts", "Campaigns", "Feed Health", "Admin",
+]
+_NAV_ICONS = [
+    "grid-3x3-gap-fill", "cpu-fill", "lightning-fill", "person-badge-fill",
+    "search", "bug-fill", "diagram-3-fill", "robot", "eye-slash-fill",
+    "crosshair", "bell-fill", "diagram-2-fill", "broadcast", "gear-fill",
+]
+if "active_page" not in st.session_state:
+    st.session_state["active_page"] = "Dashboard"
+if "_nav_select" not in st.session_state:
+    st.session_state["_nav_select"] = 0
 
-# ─── Tabs ─────────────────────────────────────────────────────────────────────
-(tab_dash, tab_advisor, tab_feed, tab_actors, tab_iocs,
- tab_cves, tab_attack, tab_analyst, tab_darkweb,
- tab_watchlist, tab_alerts, tab_campaigns,
- tab_health, tab_admin) = st.tabs([
-    "◈  Dashboard",    "⊛  Threat Advisor",  "◉  Threat Feed",
-    "⬡  Actors",       "⊙  IOC Hunt",         "◆  CVE Tracker",
-    "⬢  ATT&CK",       "⊕  AI Analyst",        "◉  Dark Web",
-    "⚑  Watchlist",   "⊜  Alerts",            "⬦  Campaigns",
-    "◎  Feed Health",  "⚙  Admin",
-])
+active_page = option_menu(
+    menu_title=None,
+    options=_NAV_PAGES,
+    icons=_NAV_ICONS,
+    orientation="horizontal",
+    manual_select=st.session_state["_nav_select"],
+    key="main_nav",
+    styles={
+        "container": {
+            "padding": "0",
+            "background-color": "#060c1a",
+            "border-bottom": "1px solid #0f2040",
+            "margin-bottom": "12px",
+        },
+        "icon": {"color": "#38bdf8", "font-size": "13px"},
+        "nav-link": {
+            "font-size": "12px",
+            "font-family": "'Inter', sans-serif",
+            "color": "#4a6080",
+            "padding": "6px 10px",
+            "border-radius": "6px",
+        },
+        "nav-link-selected": {
+            "background-color": "rgba(56,189,248,0.12)",
+            "color": "#38bdf8",
+            "font-weight": "700",
+        },
+        "nav-link:hover": {"color": "#c8d8f0"},
+    },
+)
+# Keep active_page and _nav_select in sync with user clicks
+if active_page != st.session_state.get("active_page"):
+    st.session_state["active_page"] = active_page
+    st.session_state["_nav_select"] = _NAV_PAGES.index(active_page)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DASHBOARD
 # ══════════════════════════════════════════════════════════════════════════════
-with tab_dash:
+if active_page == "Dashboard":
     st.markdown('<p class="section-label"><i class="bi bi-grid-3x3-gap-fill bi-sm"></i>&nbsp; Executive Overview</p>', unsafe_allow_html=True)
 
     if reports.empty and iocs.empty and cves.empty:
@@ -2166,7 +2177,7 @@ with tab_dash:
 # ══════════════════════════════════════════════════════════════════════════════
 # THREAT FEED
 # ══════════════════════════════════════════════════════════════════════════════
-with tab_feed:
+elif active_page == "Threat Feed":
     st.markdown('<p class="section-label"><i class="bi bi-lightning-fill bi-sm icon-error"></i>&nbsp; Active Threat Reports</p>', unsafe_allow_html=True)
 
     # Nav context from dashboard chart
@@ -2287,7 +2298,7 @@ with tab_feed:
 # ══════════════════════════════════════════════════════════════════════════════
 # THREAT ACTORS
 # ══════════════════════════════════════════════════════════════════════════════
-with tab_actors:
+elif active_page == "Actors":
     st.markdown('<p class="section-label"><i class="bi bi-person-badge-fill bi-sm icon-accent"></i>&nbsp; Threat Actor Profiles</p>', unsafe_allow_html=True)
 
     # Pinned actor from chart drill-down
@@ -2419,7 +2430,7 @@ with tab_actors:
 # ══════════════════════════════════════════════════════════════════════════════
 # IOC HUNT
 # ══════════════════════════════════════════════════════════════════════════════
-with tab_iocs:
+elif active_page == "IOC Hunt":
     st.markdown('<p class="section-label"><i class="bi bi-search bi-sm icon-accent"></i>&nbsp; IOC Hunt &amp; Enrichment</p>', unsafe_allow_html=True)
 
     # Nav banner when jumping from a dashboard chart
@@ -2808,7 +2819,7 @@ with tab_iocs:
 # ══════════════════════════════════════════════════════════════════════════════
 # CVE TRACKER
 # ══════════════════════════════════════════════════════════════════════════════
-with tab_cves:
+elif active_page == "CVE Tracker":
     st.markdown('<p class="section-label"><i class="bi bi-bug-fill bi-sm icon-error"></i>&nbsp; CVE Tracker</p>', unsafe_allow_html=True)
 
     # Nav banner when jumping from a dashboard chart
@@ -2930,7 +2941,7 @@ with tab_cves:
 # ══════════════════════════════════════════════════════════════════════════════
 # ATT&CK MAPPING
 # ══════════════════════════════════════════════════════════════════════════════
-with tab_attack:
+elif active_page == "ATT&CK":
     st.markdown('<p class="section-label"><i class="bi bi-diagram-3-fill bi-sm icon-purple"></i>&nbsp; MITRE ATT&amp;CK Mapping &amp; Remediation</p>', unsafe_allow_html=True)
 
     # Nav banner when jumping from a dashboard chart
@@ -3126,7 +3137,7 @@ with tab_attack:
 # ══════════════════════════════════════════════════════════════════════════════
 # AI ANALYST
 # ══════════════════════════════════════════════════════════════════════════════
-with tab_analyst:
+elif active_page == "AI Analyst":
     st.markdown('<p class="section-label"><i class="bi bi-cpu-fill bi-sm icon-accent"></i>&nbsp; AI Threat Intelligence Analyst</p>', unsafe_allow_html=True)
 
     # ── Backend status (live health checks) ───────────────────────────────────
@@ -3258,7 +3269,7 @@ with tab_analyst:
 # ══════════════════════════════════════════════════════════════════════════════
 # DARK WEB MONITOR
 # ══════════════════════════════════════════════════════════════════════════════
-with tab_darkweb:
+elif active_page == "Dark Web":
     # Read from DB-backed platform settings (Admin tab writes here)
     # Fall back to env var only if DB has never been written
     _dw_cfg = load_platform_settings()
@@ -3484,7 +3495,7 @@ with tab_darkweb:
 # ══════════════════════════════════════════════════════════════════════════════
 # WATCHLIST
 # ══════════════════════════════════════════════════════════════════════════════
-with tab_watchlist:
+elif active_page == "Watchlist":
     st.markdown('<p class="section-label"><i class="bi bi-crosshair bi-sm icon-accent"></i>&nbsp; Asset Watchlist</p>', unsafe_allow_html=True)
 
     # Nav banner when jumping from a dashboard chart
@@ -3582,7 +3593,7 @@ with tab_watchlist:
 # ══════════════════════════════════════════════════════════════════════════════
 # ALERTS
 # ══════════════════════════════════════════════════════════════════════════════
-with tab_alerts:
+elif active_page == "Alerts":
     st.markdown('<p class="section-label"><i class="bi bi-bell-fill bi-sm icon-error"></i>&nbsp; Watchlist Alerts</p>', unsafe_allow_html=True)
 
     if hits_df.empty:
@@ -3659,7 +3670,7 @@ with tab_alerts:
 # ══════════════════════════════════════════════════════════════════════════════
 # CAMPAIGNS
 # ══════════════════════════════════════════════════════════════════════════════
-with tab_campaigns:
+elif active_page == "Campaigns":
     st.markdown('<p class="section-label"><i class="bi bi-diagram-2-fill bi-sm icon-accent"></i>&nbsp; Campaign Tracker</p>', unsafe_allow_html=True)
 
     cam_c1, cam_c2 = st.columns([3, 1])
@@ -3748,7 +3759,7 @@ with tab_campaigns:
 # ══════════════════════════════════════════════════════════════════════════════
 # THREAT ADVISOR
 # ══════════════════════════════════════════════════════════════════════════════
-with tab_advisor:
+elif active_page == "Threat Advisor":
     st.markdown(
         '<p class="section-label">'
         '<i class="bi bi-cpu-fill bi-sm icon-accent"></i>'
@@ -4645,7 +4656,7 @@ with tab_advisor:
 # ══════════════════════════════════════════════════════════════════════════════
 # FEED HEALTH
 # ══════════════════════════════════════════════════════════════════════════════
-with tab_health:
+elif active_page == "Feed Health":
     st.markdown('<p class="section-label"><i class="bi bi-broadcast bi-sm icon-ok"></i>&nbsp; Feed Health &amp; Status</p>', unsafe_allow_html=True)
 
     if feed_status.empty:
@@ -4718,7 +4729,7 @@ with tab_health:
 # ══════════════════════════════════════════════════════════════════════════════
 # ADMIN SETTINGS
 # ══════════════════════════════════════════════════════════════════════════════
-with tab_admin:
+elif active_page == "Admin":
     st.markdown('<p class="section-label"><i class="bi bi-gear-fill bi-sm icon-accent"></i>&nbsp; Platform Administration</p>', unsafe_allow_html=True)
 
     _cfg = load_platform_settings()
@@ -5084,7 +5095,7 @@ with tab_admin:
         else:
             st.info("No API keys yet. Generate one below.")
 
-        st.markdown("<br>**Generate a new API key**")
+        st.markdown("**Generate a new API key**")
         _nk_c1, _nk_c2, _nk_c3 = st.columns([2, 1, 1])
         with _nk_c1:
             _new_key_name = st.text_input("Key name / description", key="adm_new_key_name", placeholder="Splunk SIEM integration")
