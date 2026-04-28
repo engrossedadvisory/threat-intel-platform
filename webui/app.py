@@ -880,10 +880,11 @@ def _build_network_graph(reports_df, iocs_df=None):
                f"Feed: {f}", 2.5, i, len(feeds[:8]))
 
     # Ring 2 – known actors (r=1.0, inner cluster)
-    # Exclude infrastructure feeds — they are blocklists, not named threat actors
+    # Exclude infrastructure + profile-only feeds — show only operational intel actors
     _net_infra = frozenset({
         "spamhaus", "dshield", "cert_transparency",
         "github_monitor", "sslbl", "openphish", "nvd", "cisa_kev",
+        "apt_groups",   # reference profiles, not operational reports
     })
     actor_series = (
         reports_df[
@@ -891,7 +892,9 @@ def _build_network_graph(reports_df, iocs_df=None):
             & (reports_df["threat_actor"] != "Unknown")
             & ~reports_df["source_feed"].isin(_net_infra)
         ]
-        .groupby("threat_actor").size().nlargest(6)
+        .groupby("threat_actor").size()
+        .where(lambda s: s >= 2).dropna()   # only actors with 2+ reports
+        .nlargest(6)
     )
     for i, (actor, cnt) in enumerate(actor_series.items()):
         ak = "actor:" + actor
@@ -2029,10 +2032,12 @@ if active_page == "Dashboard":
         with row2_l:
             st.markdown("#### Top Threat Actors by Report Count")
             if not reports.empty:
-                # Exclude infrastructure feeds — they carry blocklist data, not named actors
+                # Exclude infrastructure + profile-only feeds
+                # apt_groups = reference profiles, not operational intelligence
                 _dash_infra = frozenset({
                     "spamhaus", "dshield", "cert_transparency",
                     "github_monitor", "sslbl", "openphish", "nvd", "cisa_kev",
+                    "apt_groups",   # profiles are reference data, not operational reports
                 })
                 _actor_counts = (
                     reports[
@@ -2043,7 +2048,10 @@ if active_page == "Dashboard":
                     .groupby("threat_actor").agg(
                         Reports=("id", "count"),
                         Avg_Conf=("confidence_score", "mean"),
-                    ).reset_index().sort_values("Reports", ascending=True).tail(15)
+                    ).reset_index()
+                    # Require at least 2 reports to filter single-observation noise
+                    .query("Reports >= 2")
+                    .sort_values("Reports", ascending=True).tail(15)
                 )
                 if not _actor_counts.empty:
                     fig_a = px.bar(
@@ -2562,7 +2570,8 @@ elif active_page == "Actors":
     else:
         import re as _re
 
-        # Feeds that carry infrastructure data, not named actor intelligence
+        # ── Feed classification ───────────────────────────────────────────────
+        # Infrastructure feeds: blocklist data, not named actors
         _INFRA_FEEDS = frozenset({
             "spamhaus", "dshield", "cert_transparency",
             "github_monitor", "sslbl", "openphish", "nvd", "cisa_kev",
@@ -2572,33 +2581,67 @@ elif active_page == "Actors":
             """Dedup key: lowercase, collapse all whitespace / dashes / dots."""
             return _re.sub(r'[\s\-_.‐-―]+', '', name).lower()
 
-        # Filter to named-actor reports only
+        # ── Separate operational reports from reference profiles ───────────────
+        # apt_groups records are profile data — they have exactly 1 record per actor.
+        # Counting them as "reports" produces meaningless all-1 charts.
+        # Load them separately and use them only for profile enrichment.
+        _profiles_df = reports[reports["source_feed"] == "apt_groups"].copy()
+
+        # Operational intel: named actors from active threat feeds
         _actor_rpts = reports[
             reports["threat_actor"].notna()
             & (reports["threat_actor"].str.strip() != "")
             & (reports["threat_actor"] != "Unknown")
             & ~reports["source_feed"].isin(_INFRA_FEEDS)
+            & (reports["source_feed"] != "apt_groups")   # profiles excluded from count
         ].copy()
 
         # Build norm-key → canonical name mapping
-        # Canonical = the spelling that appears in the most reports
-        _norm_counts: dict[str, dict[str, int]] = {}   # normkey → {spelling: count}
+        _norm_counts: dict[str, dict[str, int]] = {}
         for actor_name, grp in _actor_rpts.groupby("threat_actor"):
             nk = _actor_norm(actor_name)
             _norm_counts.setdefault(nk, {})[actor_name] = (
                 _norm_counts.get(nk, {}).get(actor_name, 0) + len(grp)
             )
-        # Canonical = spelling with most rows; tie-break = shorter/alphabetic
         _canon: dict[str, str] = {
             nk: max(spellings.items(), key=lambda kv: (kv[1], -len(kv[0])))[0]
             for nk, spellings in _norm_counts.items()
         }
-        # Add canonical column so we can groupby it
         _actor_rpts["_canon"] = _actor_rpts["threat_actor"].map(
             lambda n: _canon.get(_actor_norm(n), n)
         )
 
-        # Aggregate by canonical name
+        # ── Helper: look up a profile from apt_groups by name or alias ────────
+        import re as _rex
+        def _find_profile(actor_name: str) -> dict:
+            """Return parsed profile fields for an actor name, or {}."""
+            _pname_norm = _actor_norm(actor_name)
+            # Direct name match
+            _pmatch = _profiles_df[
+                _profiles_df["threat_actor"].apply(
+                    lambda n: _actor_norm(str(n or "")) == _pname_norm
+                )
+            ]
+            if _pmatch.empty:
+                # Alias match: actor name appears anywhere in raw_source
+                _pmatch = _profiles_df[
+                    _profiles_df["raw_source"].str.contains(
+                        _rex.escape(actor_name), case=False, na=False
+                    )
+                ]
+            if _pmatch.empty:
+                return {}
+            _pr_raw = str(_pmatch.iloc[0].get("raw_source") or "")
+            _aka_m  = _rex.search(r"Also known as: ([^.]+)\.", _pr_raw)
+            _ori_m  = _rex.search(r"Country of origin: ([^.]+)\.", _pr_raw)
+            _des_m  = _rex.search(r"Description: (.+?)(?:Reference:|$)", _pr_raw, _rex.DOTALL)
+            return {
+                "description": _des_m.group(1).strip()[:800] if _des_m else "",
+                "aliases":     _aka_m.group(1).strip() if _aka_m else "",
+                "origin":      _ori_m.group(1).strip() if _ori_m else "",
+            }
+
+        # ── Aggregate operational data by canonical actor name ─────────────────
         actor_data = []
         for actor, grp in _actor_rpts.groupby("_canon"):
             all_ttps: set = set()
@@ -2619,68 +2662,119 @@ elif active_page == "Actors":
                 ind = str(row.get("target_industry") or "Unknown")
                 if ind and ind != "Unknown":
                     industries[ind] = industries.get(ind, 0) + 1
+            # Enrich with profile data
+            _profile = _find_profile(actor)
             actor_data.append({
-                "actor": actor,
-                "reports": len(grp),
-                "avg_conf": int(grp["confidence_score"].fillna(0).mean()),
-                "ttps": sorted(all_ttps),
-                "cves": sorted(all_cves),
-                "feeds": sorted(all_feeds),
-                "industries": industries,
+                "actor":        actor,
+                "reports":      len(grp),
+                "avg_conf":     int(grp["confidence_score"].fillna(0).mean()),
+                "ttps":         sorted(all_ttps),
+                "cves":         sorted(all_cves),
+                "feeds":        sorted(all_feeds),
+                "industries":   industries,
+                "description":  _profile.get("description", ""),
+                "aliases":      _profile.get("aliases", ""),
+                "origin":       _profile.get("origin", ""),
+                "profile_only": False,
             })
 
-        # Pinned actor sorts to top; secondary sort by report count
+        # ── Also show apt_groups profiles with no operational matches ──────────
+        # These are labelled "Reference Profile" so users know no live intel exists
+        _active_norms = {_actor_norm(a["actor"]) for a in actor_data}
+        for _, _pr in _profiles_df.iterrows():
+            _pname = str(_pr.get("threat_actor") or "").strip()
+            if not _pname or _pname == "Unknown":
+                continue
+            if _actor_norm(_pname) in _active_norms:
+                continue   # already represented in operational data above
+            _pr_raw = str(_pr.get("raw_source") or "")
+            _aka_m  = _rex.search(r"Also known as: ([^.]+)\.", _pr_raw)
+            _ori_m  = _rex.search(r"Country of origin: ([^.]+)\.", _pr_raw)
+            _des_m  = _rex.search(r"Description: (.+?)(?:Reference:|$)", _pr_raw, _rex.DOTALL)
+            actor_data.append({
+                "actor":        _pname,
+                "reports":      0,
+                "avg_conf":     int(_pr.get("confidence_score") or 70),
+                "ttps":         [],
+                "cves":         [],
+                "feeds":        ["apt_groups"],
+                "industries":   {},
+                "description":  _des_m.group(1).strip()[:800] if _des_m else "",
+                "aliases":      _aka_m.group(1).strip() if _aka_m else "",
+                "origin":       _ori_m.group(1).strip() if _ori_m else "",
+                "profile_only": True,
+            })
+
+        # Pinned actor sorts to top; then by report count desc; profiles last
         _pinned_norm = _actor_norm(_pinned_actor) if _pinned_actor else ""
         actor_data.sort(key=lambda x: (
             0 if _actor_norm(x["actor"]) == _pinned_norm else 1,
+            0 if not x["profile_only"] else 1,
             -x["reports"],
         ))
+
+        # ── Summary metric row ────────────────────────────────────────────────
+        _active_count  = sum(1 for a in actor_data if not a["profile_only"])
+        _profile_count = sum(1 for a in actor_data if a["profile_only"])
+        _ma1, _ma2, _ma3 = st.columns(3)
+        _ma1.metric("Active Threat Actors", _active_count,
+                    help="Actors with 1+ operational intelligence reports")
+        _ma2.metric("Reference Profiles", _profile_count,
+                    help="APT profiles from MITRE/ETDA with no current operational intel")
+        _ma3.metric("Total Reports", len(_actor_rpts),
+                    help="Operational threat intelligence reports attributed to named actors")
 
         if not actor_data:
             st.info("Actor profiles populate as the AI enrichment runs (may take a few cycles).")
         else:
-            # Top actors bar chart
-            adf = pd.DataFrame([{"Actor": a["actor"], "Reports": a["reports"],
-                                  "Avg Confidence": a["avg_conf"]} for a in actor_data[:20]])
-            fig_a = px.bar(
-                adf.sort_values("Reports"), x="Reports", y="Actor", orientation="h",
-                color="Avg Confidence",
-                color_continuous_scale=[[0, "#1a3a6a"], [0.5, "#38bdf8"], [1, "#ff4d6d"]],
-                labels={"Actor": "", "Reports": "Report Count"},
-            )
-            fig_a.update_layout(**_PLOTLY_DARK, height=max(250, 30 * len(adf)))
-            st.plotly_chart(fig_a, use_container_width=True)
+            # ── Top active actors bar chart (operational only) ─────────────────
+            _active_actors = [a for a in actor_data if not a["profile_only"]]
+            if _active_actors:
+                adf = pd.DataFrame([{
+                    "Actor": a["actor"],
+                    "Reports": a["reports"],
+                    "Avg Confidence": a["avg_conf"],
+                } for a in _active_actors[:20]])
+                fig_a = px.bar(
+                    adf.sort_values("Reports"), x="Reports", y="Actor", orientation="h",
+                    color="Avg Confidence",
+                    color_continuous_scale=[[0, "#1a3a6a"], [0.5, "#38bdf8"], [1, "#ff4d6d"]],
+                    labels={"Actor": "", "Reports": "Operational Report Count"},
+                )
+                fig_a.update_coloraxes(showscale=False)
+                fig_a.update_layout(**_PLOTLY_DARK, height=max(250, 32 * len(adf)),
+                                    xaxis_title="Operational Reports")
+                fig_a.update_traces(
+                    hovertemplate="<b>%{y}</b><br>%{x} reports · Avg conf: %{customdata[0]:.0f}%<extra></extra>",
+                    customdata=adf[["Avg Confidence"]].values,
+                )
+                st.plotly_chart(fig_a, use_container_width=True)
+            else:
+                st.info("No operational intelligence attributed to named actors yet. "
+                        "Reports accumulate as feeds run — check back in a few minutes.")
 
-            st.markdown("#### Actor Details")
-            for a in actor_data:
+            # ── Active actors detail expanders ─────────────────────────────────
+            st.markdown("#### Active Threat Actors")
+            _show_active = [a for a in actor_data if not a["profile_only"]]
+            if not _show_active:
+                st.caption("No operational reports attributed to named actors yet.")
+
+            for a in _show_active:
                 badge      = _severity_badge(a["avg_conf"])
                 is_pinned  = (a["actor"] == _pinned_actor)
                 _ai_key    = f"actor_ai_{a['actor']}"
                 _has_ai    = bool(st.session_state.get(_ai_key))
-                # Keep expander open when analysis is ready so result is visible
-                with st.expander(f"**{a['actor']}** — {a['reports']} report(s)", expanded=is_pinned or _has_ai):
-
-                    # ── Pull all reports for this canonical actor ─────────────
+                with st.expander(
+                    f"**{a['actor']}** — {a['reports']} report(s) · {', '.join(a['feeds'][:3])}",
+                    expanded=is_pinned or _has_ai,
+                ):
+                    # Pull operational reports for this actor
                     actor_reports_df = _actor_rpts[_actor_rpts["_canon"] == a["actor"]]
 
-                    # ── Actor description from profile records ─────────────────
-                    _profile_rpts = actor_reports_df[actor_reports_df["source_feed"] == "apt_groups"]
-                    _description  = ""
-                    _aliases_str  = ""
-                    _origin       = ""
-                    for _, _pr in _profile_rpts.iterrows():
-                        raw = str(_pr.get("raw_source") or "")
-                        if raw:
-                            # Extract key fields from the structured raw_source text
-                            import re as _rex
-                            _aka = _rex.search(r"Also known as: ([^.]+)\.", raw)
-                            _ori = _rex.search(r"Country of origin: ([^.]+)\.", raw)
-                            _desc_m = _rex.search(r"Description: (.+?)(?:Reference:|$)", raw, _rex.DOTALL)
-                            if _aka: _aliases_str = _aka.group(1).strip()
-                            if _ori: _origin = _ori.group(1).strip()
-                            if _desc_m: _description = _desc_m.group(1).strip()[:800]
-                        if _description:
-                            break
+                    # Profile data already parsed in actor_data
+                    _description = a.get("description", "")
+                    _aliases_str = a.get("aliases", "")
+                    _origin      = a.get("origin", "")
 
                     # ── Header metadata strip ─────────────────────────────────
                     c1, c2, c3 = st.columns(3)
@@ -2743,10 +2837,10 @@ elif active_page == "Actors":
                         _ctx_parts.append(f"Target industries: {', '.join(a['industries'].keys())}")
                     if a["feeds"]:
                         _ctx_parts.append(f"Intelligence sources: {', '.join(a['feeds'])}")
-                    # Include summaries from non-profile reports
+                    # Summaries from operational reports (apt_groups already excluded)
                     _op_summaries = [
                         str(r.get("summary") or "")
-                        for _, r in actor_reports_df[actor_reports_df["source_feed"] != "apt_groups"].iterrows()
+                        for _, r in actor_reports_df.iterrows()
                         if r.get("summary")
                     ][:3]
                     if _op_summaries:
@@ -2756,7 +2850,7 @@ elif active_page == "Actors":
                     st.markdown("---")
                     if not _has_ai:
                         if st.button(
-                            f"Generate AI Analysis for {a['actor']}",
+                            f"🤖 Generate AI Analysis for {a['actor']}",
                             key=f"btn_{_ai_key}",
                             type="primary",
                         ):
@@ -2770,6 +2864,75 @@ elif active_page == "Actors":
                         if st.button("↺ Refresh Analysis", key=f"clr_{_ai_key}"):
                             del st.session_state[_ai_key]
                             st.rerun()
+
+            # ── Reference Profiles Library ─────────────────────────────────────
+            # APT group profiles from MITRE ATT&CK + ETDA with no current operational reports
+            _profile_only_actors = [a for a in actor_data if a["profile_only"]]
+            if _profile_only_actors:
+                st.divider()
+                st.markdown("#### 📚 Threat Actor Reference Library")
+                st.caption(
+                    f"{len(_profile_only_actors)} profiles from MITRE ATT&CK and ETDA — "
+                    "no current operational intelligence. Use search to find specific groups."
+                )
+                _prof_search = st.text_input(
+                    "Search profiles", placeholder="e.g. APT28, Lazarus, China…",
+                    key="actor_profile_search",
+                )
+                _filtered_profiles = [
+                    a for a in _profile_only_actors
+                    if not _prof_search or _prof_search.lower() in a["actor"].lower()
+                    or _prof_search.lower() in a.get("aliases", "").lower()
+                    or _prof_search.lower() in a.get("origin", "").lower()
+                ]
+                st.caption(f"Showing {len(_filtered_profiles)} of {len(_profile_only_actors)} profiles")
+                for a in _filtered_profiles[:50]:   # cap at 50 to avoid UI overload
+                    _ai_key = f"actor_ai_{a['actor']}"
+                    _has_ai = bool(st.session_state.get(_ai_key))
+                    _label  = f"{a['actor']}"
+                    if a.get("origin"):
+                        _label += f" · {a['origin']}"
+                    with st.expander(f"📋 {_label}", expanded=_has_ai):
+                        _pc1, _pc2 = st.columns(2)
+                        with _pc1:
+                            if a.get("origin"):
+                                st.markdown(f"**Origin:** {a['origin']}")
+                            if a.get("aliases"):
+                                st.markdown(f"**Also known as:** {a['aliases'][:200]}")
+                        with _pc2:
+                            st.markdown(
+                                '<span style="background:#1a3a2a;color:#4ade80;padding:2px 8px;'
+                                'border-radius:4px;font-size:0.75rem;">Reference Profile</span>',
+                                unsafe_allow_html=True,
+                            )
+                        if a.get("description"):
+                            st.markdown(
+                                f'<div style="background:rgba(56,189,248,0.04);border-left:3px solid #38bdf840;'
+                                f'padding:10px 14px;border-radius:0 6px 6px 0;font-size:0.85rem;'
+                                f'color:#8fb0d0;margin:8px 0;">{a["description"]}</div>',
+                                unsafe_allow_html=True,
+                            )
+                        st.markdown("---")
+                        if not _has_ai:
+                            if st.button(
+                                f"🤖 Generate AI Analysis for {a['actor']}",
+                                key=f"btn_{_ai_key}",
+                            ):
+                                _ctx = ". ".join(filter(None, [
+                                    f"Actor profile: {a.get('description','')[:500]}",
+                                    f"Also known as: {a.get('aliases','')}" if a.get("aliases") else "",
+                                    f"Country of origin: {a.get('origin','')}" if a.get("origin") else "",
+                                ]))
+                                with st.spinner("Generating threat analysis…"):
+                                    st.session_state[_ai_key] = _drill_ai_analysis(
+                                        "Threat Actor", a["actor"], _ctx
+                                    )
+                                st.rerun()
+                        else:
+                            st.markdown(st.session_state[_ai_key])
+                            if st.button("↺ Refresh", key=f"clr_{_ai_key}"):
+                                del st.session_state[_ai_key]
+                                st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

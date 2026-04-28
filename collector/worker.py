@@ -58,10 +58,17 @@ def _process_malwarebazaar(db: Session, items: list) -> int:
         if not sha256 or db.query(ThreatReport).filter_by(source_id=source_id).first():
             continue
         tags = item.get("tags") or []
+        # Use malware signature (family name) as the actor proxy — the reporter
+        # field is the uploader's username, which is meaningless as a threat actor.
+        _mb_family = (
+            item.get("signature")
+            or (tags[0] if tags else None)
+            or "Unknown"
+        )
         report = ThreatReport(
             source_feed="malwarebazaar",
             source_id=source_id,
-            threat_actor=item.get("reporter", "Unknown"),
+            threat_actor=_mb_family,
             confidence_score=80,
             raw_source=str(item)[:2000],
         )
@@ -886,6 +893,46 @@ def _cleanup_bad_actor_data(db: Session) -> None:
         ("cert_transparency", "CT%"),
         ("github_monitor",    "GitHub%"),
     ]
+
+    # MalwareBazaar: old records used reporter username as threat_actor.
+    # These are random usernames (e.g. "abuse_ch", "fr0gger"), not actor names.
+    # Reset them to Unknown so re-enrichment or IOC malware_family drives attribution.
+    # We detect them by excluding known malware family name patterns —
+    # any short lowercase-or-underscore name without spaces is likely a username.
+    try:
+        result = db.execute(
+            _text(
+                "UPDATE threat_reports SET threat_actor = 'Unknown' "
+                "WHERE source_feed = 'malwarebazaar' "
+                "  AND threat_actor != 'Unknown' "
+                "  AND threat_actor NOT LIKE '% %' "   # real malware names have spaces sometimes
+                "  AND threat_actor REGEXP '^[a-z0-9_@.-]{2,30}$'"   # looks like a username
+            )
+        )
+        fixed = result.rowcount
+        if fixed:
+            db.commit()
+            log.info(f"[cleanup] Reset {fixed} malwarebazaar records with reporter usernames → 'Unknown'")
+    except Exception:
+        # REGEXP may not be available (SQLite dialect) — use simpler fallback
+        db.rollback()
+        try:
+            result = db.execute(
+                _text(
+                    "UPDATE threat_reports SET threat_actor = 'Unknown' "
+                    "WHERE source_feed = 'malwarebazaar' "
+                    "  AND threat_actor != 'Unknown' "
+                    "  AND LENGTH(threat_actor) < 20 "
+                    "  AND LOWER(threat_actor) = threat_actor "  # all lowercase → username pattern
+                )
+            )
+            fixed = result.rowcount
+            if fixed:
+                db.commit()
+                log.info(f"[cleanup] Reset {fixed} malwarebazaar lowercase-username records → 'Unknown'")
+        except Exception as exc2:
+            log.debug(f"[cleanup] malwarebazaar fallback cleanup failed: {exc2}")
+            db.rollback()
 
     total_fixed = 0
     for feed_name, pattern in _infra_fixes:
