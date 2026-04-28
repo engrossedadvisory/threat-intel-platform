@@ -861,6 +861,202 @@ def _process_apt_groups(db: Session, items: list) -> int:
     return saved
 
 
+def _cleanup_bad_actor_data(db: Session) -> None:
+    """One-time DB cleanup: fix existing records where infrastructure feeds were
+    incorrectly stored with named threat_actor values instead of 'Unknown'.
+
+    This covers:
+    - Spamhaus records saved as "Spamhaus Listed" (old code)
+    - DShield records saved as "DShield/XX" (old code)
+    - Any other infra feed rows with a non-Unknown actor name
+
+    Safe to run on every startup — uses targeted WHERE clauses, no full table scans.
+    """
+    from sqlalchemy import text as _text
+
+    _infra_fixes = [
+        # (feed_name, bad_actor_pattern) — wildcards for LIKE
+        ("spamhaus",   "Spamhaus%"),
+        ("spamhaus",   "SPAMHAUS%"),
+        ("dshield",    "DShield%"),
+        ("dshield",    "SANS%"),
+        ("sslbl",      "SSL%"),
+        ("openphish",  "Phishing%"),
+        ("openphish",  "OpenPhish%"),
+        ("cert_transparency", "CT%"),
+        ("github_monitor",    "GitHub%"),
+    ]
+
+    total_fixed = 0
+    for feed_name, pattern in _infra_fixes:
+        try:
+            result = db.execute(
+                _text(
+                    "UPDATE threat_reports SET threat_actor = 'Unknown' "
+                    "WHERE source_feed = :feed "
+                    "  AND threat_actor != 'Unknown' "
+                    "  AND threat_actor LIKE :pattern"
+                ),
+                {"feed": feed_name, "pattern": pattern},
+            )
+            fixed = result.rowcount
+            if fixed:
+                db.commit()
+                log.info(f"[cleanup] Fixed {fixed} '{feed_name}' records "
+                         f"(was matching '{pattern}') → threat_actor='Unknown'")
+                total_fixed += fixed
+        except Exception as exc:
+            log.warning(f"[cleanup] Could not fix '{feed_name}/{pattern}': {exc}")
+            db.rollback()
+
+    if total_fixed:
+        log.info(f"[cleanup] Total bad actor records corrected: {total_fixed}")
+    else:
+        log.debug("[cleanup] No bad actor records found — DB is clean.")
+
+
+def _correlate_actor_aliases(db: Session) -> int:
+    """Match APT group aliases against threat reports stored as 'Unknown' actor.
+
+    How it works:
+    1. Load all apt_groups profile records and parse their aliases list from raw_source.
+    2. Build an alias → canonical_name mapping (normalised for fuzzy matching).
+    3. For each ThreatReport with threat_actor='Unknown', search its raw_source for
+       any known alias using word-boundary regex.
+    4. When a match is found, update threat_actor to the canonical group name.
+
+    This is what fixes "all actors showing 1 report" — once aliases are correlated,
+    the operational intel records are attributed to named actors rather than 'Unknown'.
+    """
+    import re as _re
+    from sqlalchemy import text as _sql
+
+    def _norm(name: str) -> str:
+        return _re.sub(r'[\s\-_.]+', '', name).lower()
+
+    # ── Step 1: Load all apt_groups profiles ──────────────────────────────────
+    profiles = db.execute(
+        _sql(
+            "SELECT threat_actor, raw_source, source_id "
+            "FROM threat_reports WHERE source_feed = 'apt_groups' "
+            "  AND threat_actor IS NOT NULL AND threat_actor != 'Unknown'"
+        )
+    ).fetchall()
+
+    if not profiles:
+        log.debug("[correlate] No apt_groups profiles found — skipping alias correlation.")
+        return 0
+
+    # ── Step 2: Build alias → canonical map ───────────────────────────────────
+    # Format in raw_source: "Also known as: alias1, alias2, alias3."
+    _alias_re = _re.compile(r"Also known as:\s*([^.]+)\.", _re.IGNORECASE)
+
+    # canonical_name → [all known name variants including aliases]
+    actor_variants: dict[str, list[str]] = {}
+
+    for row in profiles:
+        canonical = str(row[0]).strip()
+        raw = str(row[1] or "")
+
+        variants = [canonical]
+
+        # Extract aliases from "Also known as: ..." in raw_source
+        m = _alias_re.search(raw)
+        if m:
+            for alias in m.group(1).split(","):
+                alias = alias.strip().strip(".")
+                if alias and len(alias) >= 3:
+                    variants.append(alias)
+
+        actor_variants[canonical] = variants
+
+    # Build reverse map: normalised variant → canonical name
+    # (longer canonical wins on collision to prefer full names over abbreviations)
+    alias_to_canonical: dict[str, str] = {}
+    for canonical, variants in actor_variants.items():
+        for v in variants:
+            nk = _norm(v)
+            existing = alias_to_canonical.get(nk)
+            if not existing or len(canonical) > len(existing):
+                alias_to_canonical[nk] = canonical
+
+    # ── Step 3: Build regex patterns for efficient searching ──────────────────
+    # Group by canonical so we only need one pass per report
+    # Each pattern: word-boundary anchored, case-insensitive
+    # We sort by length descending so longer/more-specific names match first
+    canonical_patterns: list[tuple[str, _re.Pattern]] = []
+    for canonical, variants in actor_variants.items():
+        # Build a single alternation regex for all variants of this actor
+        escaped = sorted(
+            [_re.escape(v) for v in variants if len(v) >= 3],
+            key=len, reverse=True,
+        )
+        if not escaped:
+            continue
+        pattern_str = r"\b(?:" + "|".join(escaped) + r")\b"
+        try:
+            pat = _re.compile(pattern_str, _re.IGNORECASE)
+            canonical_patterns.append((canonical, pat))
+        except _re.error:
+            continue
+
+    if not canonical_patterns:
+        log.debug("[correlate] No usable patterns built — skipping.")
+        return 0
+
+    log.info(f"[correlate] Built patterns for {len(canonical_patterns)} known actors.")
+
+    # ── Step 4: Match against 'Unknown' actor reports in batches ──────────────
+    updated = 0
+    batch_size = 200  # process this many Unknown reports per cycle
+
+    unknown_reports = db.execute(
+        _sql(
+            "SELECT id, raw_source FROM threat_reports "
+            "WHERE (threat_actor = 'Unknown' OR threat_actor IS NULL) "
+            "  AND source_feed NOT IN ('apt_groups', 'spamhaus', 'dshield', "
+            "      'cert_transparency', 'github_monitor', 'sslbl', 'openphish', "
+            "      'nvd', 'cisa_kev') "
+            "  AND raw_source IS NOT NULL AND raw_source != '' "
+            "ORDER BY id DESC LIMIT :limit"
+        ),
+        {"limit": batch_size},
+    ).fetchall()
+
+    for row in unknown_reports:
+        report_id = row[0]
+        raw_text  = str(row[1] or "")
+        if not raw_text.strip():
+            continue
+
+        matched_canonical = None
+        for canonical, pat in canonical_patterns:
+            if pat.search(raw_text):
+                matched_canonical = canonical
+                break  # first/longest match wins
+
+        if matched_canonical:
+            try:
+                db.execute(
+                    _sql(
+                        "UPDATE threat_reports SET threat_actor = :actor "
+                        "WHERE id = :id"
+                    ),
+                    {"actor": matched_canonical, "id": report_id},
+                )
+                updated += 1
+            except Exception as exc:
+                log.debug(f"[correlate] Could not update report {report_id}: {exc}")
+
+    if updated:
+        db.commit()
+        log.info(f"[correlate] Attributed {updated} 'Unknown' reports to named actors.")
+    else:
+        log.debug("[correlate] No new alias matches found in this batch.")
+
+    return updated
+
+
 _PROCESSORS = {
     "cisa_kev":           _process_cisa_kev,
     "urlhaus":            _process_urlhaus,
@@ -887,21 +1083,23 @@ _PROCESSORS = {
 # ─── AI TTP enrichment ────────────────────────────────────────────────────────
 
 def _enrich_missing_ttps(db: Session, batch_size: int = 10) -> int:
-    """Find threat reports with no TTPs extracted and run the AI analyzer on them.
+    """Find threat reports with no TTPs extracted and run the multi-tier AI analyzer.
 
-    The analyzer tries Ollama → Claude → Gemini in order.  We only update
-    records where the AI returns a non-empty ttps list so we never blank out
-    an already-good record and don't keep retrying truly un-enrichable rows
-    indefinitely (they'll eventually get a non-empty summary which acts as a
-    signal that the analyzer ran, even if no TTPs were found).
+    The analyzer runs Tier-1 (primary model) then Tier-2 (secondary correlation)
+    before falling back to cloud options.  We pass any matching APT group profile
+    text as 'context' to the correlation pass to improve attribution quality.
+
+    We only update records where the AI returns a non-empty ttps list or summary
+    so we never blank out already-good records.  Reports with an empty summary
+    after analysis won't be retried (summary acts as a "was tried" sentinel).
     """
-    # Fetch reports that still have an empty ttps array AND no summary yet
-    # (summary is written on every successful analyze() call, so it doubles as
-    # a "was tried" flag once we've attempted enrichment at least once).
+    from sqlalchemy import text as _sql
+
     candidates = (
         db.query(ThreatReport)
         .filter(
-            ThreatReport.source_feed != "mitre_attack",  # skip pure ATT&CK objects
+            ThreatReport.source_feed != "mitre_attack",   # skip pure ATT&CK objects
+            ThreatReport.source_feed != "apt_groups",     # skip actor profiles
             ThreatReport.summary.is_(None),
         )
         .order_by(ThreatReport.id.asc())
@@ -912,16 +1110,49 @@ def _enrich_missing_ttps(db: Session, batch_size: int = 10) -> int:
     if not candidates:
         return 0
 
+    # Build a quick actor→profile lookup for context enrichment
+    # (only load once per batch call to avoid N+1 queries)
+    _profile_cache: dict[str, str] = {}
+
+    def _get_actor_context(actor_name: str) -> str:
+        """Fetch the apt_groups raw_source for this actor name (normalised match)."""
+        if not actor_name or actor_name == "Unknown":
+            return ""
+        if actor_name in _profile_cache:
+            return _profile_cache[actor_name]
+        row = db.execute(
+            _sql(
+                "SELECT raw_source FROM threat_reports "
+                "WHERE source_feed = 'apt_groups' "
+                "  AND LOWER(threat_actor) = LOWER(:actor) "
+                "LIMIT 1"
+            ),
+            {"actor": actor_name},
+        ).fetchone()
+        ctx = str(row[0]) if row and row[0] else ""
+        _profile_cache[actor_name] = ctx
+        return ctx
+
     enriched = 0
     for report in candidates:
         raw = report.raw_source or ""
         if not raw.strip():
-            # Nothing to analyze — stamp an empty summary so we skip it next time
             report.summary = ""
             db.commit()
             continue
 
-        intel = analyze(raw)
+        # Build correlation context: actor profile + existing IOC/feed context
+        context_parts = []
+        actor_ctx = _get_actor_context(report.threat_actor or "")
+        if actor_ctx:
+            context_parts.append(f"Actor profile: {actor_ctx[:1500]}")
+        if report.source_feed:
+            context_parts.append(f"Source feed: {report.source_feed}")
+        if report.target_industry and report.target_industry != "Unknown":
+            context_parts.append(f"Known target industry: {report.target_industry}")
+        context = "\n".join(context_parts)
+
+        intel = analyze(raw, context=context)
         if intel is None:
             # No AI backend available right now; leave for next cycle
             break
@@ -929,16 +1160,26 @@ def _enrich_missing_ttps(db: Session, batch_size: int = 10) -> int:
         report.ttps = intel.get("ttps") or []
         report.associated_cves = intel.get("associated_cves") or []
         report.summary = intel.get("summary") or ""
+
         # Only overwrite actor/industry if the report still has defaults
         if report.threat_actor in (None, "Unknown", ""):
             report.threat_actor = intel.get("threat_actor") or "Unknown"
         if report.target_industry in (None, "Unknown", ""):
             report.target_industry = intel.get("target_industry") or "Unknown"
+
+        # Store attribution reasoning in a richer summary when available
+        attribution = intel.get("attribution_reasoning", "")
+        if attribution and attribution.lower() not in ("unknown", ""):
+            existing_summary = report.summary or ""
+            if attribution not in existing_summary:
+                report.summary = (existing_summary + " " + attribution).strip()[:500]
+
         db.commit()
         enriched += 1
 
     if enriched:
-        log.info(f"[enrichment] AI-enriched {enriched}/{len(candidates)} reports with TTPs/summaries")
+        log.info(f"[enrichment] AI-enriched {enriched}/{len(candidates)} reports "
+                 f"(multi-tier: primary + secondary correlation)")
     return enriched
 
 
@@ -977,8 +1218,9 @@ def _run_feed(feed, db: Session):
 def _purge_deprecated_feeds(db: Session) -> None:
     """Hard-delete all data from feeds that have been permanently removed.
     Runs once at startup so stale records never appear in the UI again.
-    IOCs are deleted via ON DELETE CASCADE on the foreign key."""
-    _deprecated = ("urlhaus", "threatfox")
+    IOCs are deleted via ON DELETE CASCADE on the foreign key.
+    NOTE: urlhaus and threatfox are ACTIVE feeds — do not add them here."""
+    _deprecated: tuple = ()  # no currently deprecated feeds
     for feed_name in _deprecated:
         try:
             count = db.query(ThreatReport).filter_by(source_feed=feed_name).count()
@@ -988,7 +1230,6 @@ def _purge_deprecated_feeds(db: Session) -> None:
                 )
                 db.commit()
                 log.info(f"[startup] Purged {count} deprecated '{feed_name}' records.")
-            # Also clean up feed_status row so it stops appearing in Feed Health
             db.query(FeedStatus).filter_by(feed_name=feed_name).delete(
                 synchronize_session=False
             )
@@ -1002,21 +1243,24 @@ def main():
     log.info("Threat Intel Collector starting — waiting for DB...")
     time.sleep(15)
 
-    # One-time cleanup: remove data from deprecated feeds
+    # One-time startup tasks
     _init_db = SessionLocal()
     try:
         _purge_deprecated_feeds(_init_db)
+        # Fix bad actor data from old code (Spamhaus Listed, DShield/XX, etc.)
+        _cleanup_bad_actor_data(_init_db)
     finally:
         _init_db.close()
 
     now = time.time()
     for feed in ALL_FEEDS:
         _next_run[feed.name] = now
+
     # Enrichment runs every 5 min to stay within the VT 500 calls/day free tier.
-    # With batch_size=10 and priority routing (GreyNoise first for IPs), actual
-    # VT calls are well below the cap even at this cadence.
-    _ENRICH_INTERVAL = 300   # seconds between enrichment batches
-    _next_enrich = 0.0       # run immediately on first loop
+    _ENRICH_INTERVAL   = 300    # seconds between IOC enrichment batches
+    _CORRELATE_INTERVAL = 600   # seconds between actor alias correlation passes
+    _next_enrich    = 0.0       # run immediately on first loop
+    _next_correlate = 60.0      # first correlation pass after 1 minute
 
     while True:
         now = time.time()
@@ -1038,6 +1282,17 @@ def main():
                 except Exception as e:
                     log.debug(f"[enrichment] skipped: {e}")
                     _next_enrich = time.time() + _ENRICH_INTERVAL
+
+            # Actor alias correlation — attribute 'Unknown' reports to named actors
+            if now >= _next_correlate:
+                try:
+                    correlated = _correlate_actor_aliases(db)
+                    if correlated:
+                        log.info(f"[correlate] {correlated} reports attributed this cycle.")
+                    _next_correlate = time.time() + _CORRELATE_INTERVAL
+                except Exception as e:
+                    log.debug(f"[correlate] skipped: {e}")
+                    _next_correlate = time.time() + _CORRELATE_INTERVAL
 
             # Check new IOCs against watchlist
             try:

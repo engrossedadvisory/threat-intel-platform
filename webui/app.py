@@ -880,9 +880,19 @@ def _build_network_graph(reports_df, iocs_df=None):
                f"Feed: {f}", 2.5, i, len(feeds[:8]))
 
     # Ring 2 – known actors (r=1.0, inner cluster)
-    actor_series = (reports_df[reports_df["threat_actor"].notna()
-                               & (reports_df["threat_actor"] != "Unknown")]
-                    .groupby("threat_actor").size().nlargest(6))
+    # Exclude infrastructure feeds — they are blocklists, not named threat actors
+    _net_infra = frozenset({
+        "spamhaus", "dshield", "cert_transparency",
+        "github_monitor", "sslbl", "openphish", "nvd", "cisa_kev",
+    })
+    actor_series = (
+        reports_df[
+            reports_df["threat_actor"].notna()
+            & (reports_df["threat_actor"] != "Unknown")
+            & ~reports_df["source_feed"].isin(_net_infra)
+        ]
+        .groupby("threat_actor").size().nlargest(6)
+    )
     for i, (actor, cnt) in enumerate(actor_series.items()):
         ak = "actor:" + actor
         _place(ak, actor, "#ff4d6d", 20,
@@ -2019,8 +2029,17 @@ if active_page == "Dashboard":
         with row2_l:
             st.markdown("#### Top Threat Actors by Report Count")
             if not reports.empty:
+                # Exclude infrastructure feeds — they carry blocklist data, not named actors
+                _dash_infra = frozenset({
+                    "spamhaus", "dshield", "cert_transparency",
+                    "github_monitor", "sslbl", "openphish", "nvd", "cisa_kev",
+                })
                 _actor_counts = (
-                    reports[reports["threat_actor"].notna() & (reports["threat_actor"] != "Unknown")]
+                    reports[
+                        reports["threat_actor"].notna()
+                        & (reports["threat_actor"] != "Unknown")
+                        & ~reports["source_feed"].isin(_dash_infra)
+                    ]
                     .groupby("threat_actor").agg(
                         Reports=("id", "count"),
                         Avg_Conf=("confidence_score", "mean"),
