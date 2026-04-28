@@ -1626,11 +1626,18 @@ if "_nav_select" not in st.session_state:
 _manual_sel = st.session_state["_nav_select"]
 st.session_state["_nav_select"] = -1       # reset immediately before render
 
+# default_index keeps the menu on the correct page during auto-refresh
+# reruns (when manual_select is -1, option_menu falls back to default_index).
+_current_page_idx = _NAV_PAGES.index(
+    st.session_state.get("active_page", "Dashboard")
+)
+
 active_page = option_menu(
     menu_title=None,
     options=_NAV_PAGES,
     icons=_NAV_ICONS,
     orientation="horizontal",
+    default_index=_current_page_idx,       # survive auto-refresh reruns
     manual_select=_manual_sel,             # -1 = follow user; ≥0 = jump once
     key="main_nav",
     styles={
@@ -1640,13 +1647,25 @@ active_page = option_menu(
             "border-bottom": "1px solid #0f2040",
             "margin-bottom": "12px",
         },
-        "icon": {"color": "#38bdf8", "font-size": "13px"},
+        "icon": {
+            "color": "#38bdf8",
+            "font-size": "13px",
+            "display": "block",
+            "text-align": "center",
+        },
         "nav-link": {
-            "font-size": "12px",
+            "font-size": "11px",
             "font-family": "'Inter', sans-serif",
             "color": "#4a6080",
-            "padding": "6px 10px",
+            "padding": "6px 8px",
             "border-radius": "6px",
+            "display": "flex",
+            "flex-direction": "column",
+            "align-items": "center",
+            "justify-content": "center",
+            "text-align": "center",
+            "white-space": "nowrap",
+            "gap": "3px",
         },
         "nav-link-selected": {
             "background-color": "rgba(56,189,248,0.12)",
