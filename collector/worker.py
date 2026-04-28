@@ -679,9 +679,195 @@ def _process_cybercrime_tracker(db: Session, items: list) -> int:
     return saved
 
 
+def _process_urlhaus(db: Session, items: list) -> int:
+    """URLhaus (abuse.ch) — recent malicious URLs with malware tags."""
+    from urllib.parse import urlparse as _up
+    import re as _re
+    _IP_RE = _re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
+    saved = 0
+    for item in items:
+        url_val = str(item.get("url", "") or "").strip()
+        uid     = str(item.get("id", "") or item.get("urlhaus_reference", "")).strip()
+        if not url_val:
+            continue
+        source_id = f"urlhaus_{uid}" if uid else f"urlhaus_{hash(url_val)}"
+        if db.query(ThreatReport).filter_by(source_id=source_id).first():
+            continue
+        tags_raw  = item.get("tags") or []
+        malware   = (tags_raw[0] if tags_raw else None) or str(item.get("threat", "malware"))
+        host      = ""
+        try:
+            host = _up(url_val).hostname or ""
+        except Exception:
+            pass
+        raw = (
+            f"URLhaus malicious URL: {url_val}. "
+            f"Threat type: {item.get('threat', '')}. "
+            f"Tags: {', '.join(str(t) for t in tags_raw)}. "
+            f"Date added: {item.get('date_added', '')}. "
+            f"URLhaus reference: {item.get('urlhaus_reference', '')}."
+        )
+        report = ThreatReport(
+            source_feed="urlhaus",
+            source_id=source_id,
+            threat_actor="Unknown",
+            confidence_score=80,
+            raw_source=raw[:2000],
+            summary=f"Malicious URL ({malware}) at {host or url_val[:60]}.",
+        )
+        db.add(report)
+        db.flush()
+        db.add(IOC(report_id=report.id, ioc_type="url",
+                   value=url_val[:512], malware_family=malware, tags=list(tags_raw)))
+        if host:
+            host_type = "ip" if _IP_RE.match(host) else "domain"
+            db.add(IOC(report_id=report.id, ioc_type=host_type,
+                       value=host[:512], malware_family=malware, tags=list(tags_raw)))
+        saved += 1
+    db.commit()
+    return saved
+
+
+def _process_threatfox(db: Session, items: list) -> int:
+    """ThreatFox (abuse.ch) — structured IoCs with malware family attribution."""
+    import re as _re
+    _IP_RE = _re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
+    saved = 0
+    for item in items:
+        ioc_val  = str(item.get("ioc_value", "") or item.get("ioc", "")).strip()
+        ioc_type = str(item.get("ioc_type", "") or "").lower().strip()
+        malware  = str(item.get("malware", "") or item.get("malware_alias", "Unknown")).strip()
+        uid      = str(item.get("id", "") or "").strip()
+        if not ioc_val or not uid:
+            continue
+        source_id = f"threatfox_{uid}"
+        if db.query(ThreatReport).filter_by(source_id=source_id).first():
+            continue
+        # Normalise ioc_type to our schema
+        _type_map = {
+            "ip:port": "ip:port", "domain": "domain", "url": "url",
+            "md5_hash": "hash_md5", "sha256_hash": "hash_sha256",
+        }
+        std_type = _type_map.get(ioc_type, ioc_type or "unknown")
+        tags_raw = item.get("tags") or []
+        confidence = min(100, int(item.get("confidence_level", 50) or 50))
+        raw = (
+            f"ThreatFox IoC: {ioc_val}. "
+            f"Type: {ioc_type}. Malware: {malware}. "
+            f"Confidence: {confidence}%. "
+            f"First seen: {item.get('first_seen', '')}. "
+            f"Reporter: {item.get('reporter', '')}. "
+            f"Reference: {item.get('reference', '')}."
+        )
+        report = ThreatReport(
+            source_feed="threatfox",
+            source_id=source_id,
+            threat_actor=malware,
+            confidence_score=confidence,
+            raw_source=raw[:2000],
+            summary=f"ThreatFox {ioc_type} IoC for {malware}: {ioc_val[:80]}.",
+        )
+        db.add(report)
+        db.flush()
+        db.add(IOC(report_id=report.id, ioc_type=std_type,
+                   value=ioc_val[:512], malware_family=malware, tags=list(tags_raw)))
+        saved += 1
+    db.commit()
+    return saved
+
+
+def _process_spamhaus(db: Session, items: list) -> int:
+    """Spamhaus DROP/EDROP — IP CIDR blocks linked to spam/malware infrastructure."""
+    saved = 0
+    for item in items:
+        cidr      = str(item.get("cidr", "") or "").strip()
+        sbl_ref   = str(item.get("sbl_ref", "") or "").strip()
+        if not cidr:
+            continue
+        source_id = f"spamhaus_{cidr}"
+        if db.query(ThreatReport).filter_by(source_id=source_id).first():
+            continue
+        raw = (
+            f"Spamhaus DROP blocked network: {cidr}. "
+            f"SBL reference: {sbl_ref}. "
+            f"Source: {item.get('source_url', '')}. "
+            f"This IP block is listed on the Spamhaus Don't Route Or Peer list "
+            f"as a source of spam, malware, or botnet activity."
+        )
+        report = ThreatReport(
+            source_feed="spamhaus",
+            source_id=source_id,
+            threat_actor="Spamhaus Listed",
+            confidence_score=85,
+            raw_source=raw[:2000],
+            summary=f"Spamhaus blocked IP range {cidr} ({sbl_ref}).",
+        )
+        db.add(report)
+        db.flush()
+        db.add(IOC(report_id=report.id, ioc_type="cidr",
+                   value=cidr[:512], malware_family="Spamhaus",
+                   tags=["spam", "malware", "drop", sbl_ref]))
+        saved += 1
+    db.commit()
+    return saved
+
+
+def _process_apt_groups(db: Session, items: list) -> int:
+    """MITRE ATT&CK Groups + ETDA APT database — named threat actor profiles."""
+    saved = 0
+    for item in items:
+        name     = str(item.get("name", "Unknown") or "Unknown").strip()
+        group_id = str(item.get("group_id", "") or "").strip()
+        aliases  = item.get("aliases") or []
+        desc     = str(item.get("description", "") or "").strip()
+        origin   = str(item.get("origin", "") or "").strip()
+        target   = str(item.get("target_industry", "Multiple") or "Multiple").strip()
+        url      = str(item.get("url", "") or "").strip()
+        source   = str(item.get("_source", "") or "").strip()
+
+        source_id = f"aptgroup_{source}_{group_id or name[:40]}"
+        if db.query(ThreatReport).filter_by(source_id=source_id).first():
+            continue
+
+        alias_str = ", ".join(str(a) for a in aliases[:10]) if aliases else ""
+        raw = (
+            f"Threat Actor Profile: {name}. "
+            + (f"Group ID: {group_id}. " if group_id else "")
+            + (f"Also known as: {alias_str}. " if alias_str else "")
+            + (f"Country of origin: {origin}. " if origin else "")
+            + (f"Target industries: {target}. " if target else "")
+            + (f"Description: {desc[:600]}. " if desc else "")
+            + (f"Reference: {url}" if url else "")
+        )
+        summary = (
+            f"{name}"
+            + (f" (aka {alias_str[:80]})" if alias_str else "")
+            + (f" — {origin} threat actor" if origin else " — threat actor")
+            + (f" targeting {target[:80]}" if target and target != "Multiple" else "")
+            + "."
+        )
+        report = ThreatReport(
+            source_feed="apt_groups",
+            source_id=source_id,
+            threat_actor=name,
+            target_industry=target[:255],
+            ttps=[],
+            confidence_score=70,
+            raw_source=raw[:2000],
+            summary=summary[:500],
+        )
+        db.add(report)
+        saved += 1
+    db.commit()
+    return saved
+
+
 _PROCESSORS = {
     "cisa_kev":           _process_cisa_kev,
-    # threatfox/urlhaus removed — replaced by ransomware_live and cybercrime_tracker
+    "urlhaus":            _process_urlhaus,
+    "threatfox":          _process_threatfox,
+    "spamhaus":           _process_spamhaus,
+    "apt_groups":         _process_apt_groups,
     "malwarebazaar":      _process_malwarebazaar,
     "nvd":                _process_nvd,
     "mitre_attack":       _process_mitre_attack,

@@ -1,6 +1,8 @@
 from .cisa_kev import CISAKEVFeed
-# URLhaus and ThreatFox removed — replaced by RansomwareLiveFeed and
-# CybercrimeTrackerFeed which provide named threat actors and richer context.
+from .urlhaus import URLhausFeed
+from .threatfox import ThreatFoxFeed
+from .spamhaus import SpamhausFeed
+from .apt_groups import APTGroupFeed
 from .malwarebazaar import MalwareBazaarFeed
 from .nvd import NVDFeed
 from .mitre_attack import MITREAttackFeed
@@ -18,13 +20,17 @@ from .cybercrime_tracker import CybercrimeTrackerFeed
 
 ALL_FEEDS = [
     CISAKEVFeed(),
-    RansomwareLiveFeed(),       # replaces URLhaus — named actors, victims, industries
-    CybercrimeTrackerFeed(),    # replaces ThreatFox — C2 panels with malware families
+    URLhausFeed(),               # abuse.ch malicious URLs
+    ThreatFoxFeed(),             # abuse.ch structured IoCs with malware families
+    SpamhausFeed(),              # Spamhaus DROP/EDROP IP block lists
+    APTGroupFeed(),              # MITRE ATT&CK + ETDA named threat actor profiles
+    RansomwareLiveFeed(),
+    CybercrimeTrackerFeed(),
     MalwareBazaarFeed(),
     NVDFeed(),
     MITREAttackFeed(),
     OTXFeed(),
-    DarkWebFeed(),              # always registered; configure() controls enablement at runtime
+    DarkWebFeed(),               # always registered; configure() controls enablement at runtime
     CertTransparencyFeed(),
     SecurityRSSFeed(),
     GithubMonitorFeed(),

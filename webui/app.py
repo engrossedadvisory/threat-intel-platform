@@ -1358,6 +1358,7 @@ def _build_context(reports, iocs, cves, techniques_df) -> str:
     return "\n".join(lines)
 
 
+@st.cache_data(ttl=30, show_spinner=False)
 def _ollama_up() -> bool:
     try:
         return _requests.get(f"{_OLLAMA_URL}/api/tags", timeout=2).ok
@@ -1365,6 +1366,7 @@ def _ollama_up() -> bool:
         return False
 
 
+@st.cache_data(ttl=30, show_spinner=False)
 def _lmstudio_up() -> bool:
     if not _LMSTUDIO_URL:
         return False
@@ -1604,6 +1606,133 @@ st.divider()
 
 # Drill Panel intentionally NOT auto-rendered here.
 # AI analysis is opt-in via buttons within each target tab.
+
+# ─── AI Analyst page — wrapped in @st.fragment so st.chat_input reruns
+#     are isolated and do NOT re-execute the navigation bar. ─────────────────
+@st.fragment
+def _ai_analyst_tab(reports, iocs, cves, techniques_df, ttp_usage):
+    st.markdown('<p class="section-label"><i class="bi bi-cpu-fill bi-sm icon-accent"></i>&nbsp; AI Threat Intelligence Analyst</p>', unsafe_allow_html=True)
+
+    ollama_ok   = _ollama_up()
+    lmstudio_ok = _lmstudio_up()
+
+    chain = []
+    model_list = ", ".join(_LOCAL_MODELS)
+    ok_icon  = '<i class="bi bi-circle-fill icon-ok"  style="font-size:0.55rem"></i>'
+    off_icon = '<i class="bi bi-circle-fill icon-muted" style="font-size:0.55rem"></i>'
+    cld_icon = '<i class="bi bi-cloud-fill icon-accent" style="font-size:0.7rem"></i>'
+    chain.append(
+        (f"{ok_icon} Ollama [{model_list}]" if ollama_ok else f"{off_icon} Ollama offline [{model_list}]")
+    )
+    if _LMSTUDIO_URL:
+        chain.append((ok_icon if lmstudio_ok else off_icon) + f" LM Studio [{_LMSTUDIO_MDL}]")
+    if _CLAUDE_KEY:
+        chain.append(f"{cld_icon} Claude (fallback)")
+    if _GEMINI_KEY:
+        chain.append(f"{cld_icon} Gemini (fallback)")
+
+    st.markdown(
+        '<div style="background:rgba(56,189,248,0.05);border:1px solid rgba(56,189,248,0.15);'
+        'border-radius:8px;padding:8px 14px;font-size:0.78rem;color:#4a6080;">'
+        '<i class="bi bi-cpu bi-sm icon-accent"></i>&nbsp; <strong style="color:#7aadcf">AI chain (local first):</strong>&nbsp; '
+        + '  <span style="color:#1e3a5f">›</span>  '.join(chain) + '</div>',
+        unsafe_allow_html=True,
+    )
+
+    any_backend = ollama_ok or lmstudio_ok or bool(_CLAUDE_KEY) or bool(_GEMINI_KEY)
+    if not any_backend:
+        st.error(
+            "**No AI backend reachable.** "
+            "Add `OLLAMA_MODELS=modelname` to `/opt/threat-intel-platform/.env` "
+            "and run `sudo docker compose up -d` on the server, "
+            "or set `CLAUDE_API_KEY` / `GEMINI_API_KEY` as a cloud fallback."
+        )
+
+    if "analyst_messages" not in st.session_state:
+        st.session_state.analyst_messages = []
+
+    _ctx = _build_context(reports, iocs, cves, techniques_df)
+
+    # ── Starter question buttons (shown only on empty conversation) ───────────
+    if not st.session_state.analyst_messages:
+        st.markdown('<span style="font-size:0.78rem;font-weight:700;color:#3d5a80;text-transform:uppercase;letter-spacing:0.1em"><i class="bi bi-stars bi-sm icon-accent"></i>&nbsp; Suggested questions</span>', unsafe_allow_html=True)
+        starters = [
+            "What are the most active threat actors right now?",
+            "Which ATT&CK tactics are most commonly observed?",
+            "List the critical CVEs and recommended patches.",
+            "What malware families appear most frequently?",
+            "Which industries are being targeted the most?",
+            "What TTPs should I prioritise for detection rules?",
+            "Give me an executive summary of current threats.",
+            "Generate a Sigma detection rule for the most common TTP observed.",
+        ]
+        cols = st.columns(2)
+        for i, q in enumerate(starters):
+            if cols[i % 2].button(q, key=f"starter_{i}", use_container_width=True):
+                st.session_state.analyst_messages.append({"role": "user", "content": q})
+                st.rerun(scope="fragment")
+
+    # ── Sigma rule quick-generate ─────────────────────────────────────────────
+    with st.expander("◆  Quick-generate Sigma detection rules", expanded=False):
+        st.markdown(
+            '<span style="font-size:0.78rem;color:#5a7fa8;">Generate YAML Sigma rules from your top observed TTPs — '
+            'ready to import into Splunk, Elastic, or any Sigma-compatible SIEM.</span>',
+            unsafe_allow_html=True,
+        )
+        _sigma_c1, _sigma_c2 = st.columns([3, 1])
+        with _sigma_c1:
+            _top_ttps = sorted(ttp_usage.items(), key=lambda x: -(x[1].get("count", 0) if isinstance(x[1], dict) else int(x[1])))[:10]
+            _ttp_opts = [f"{t} ({v.get('count',0) if isinstance(v, dict) else v}×)" for t, v in _top_ttps]
+            _sel_ttp  = st.selectbox("Select TTP to generate rule for", ["— choose —"] + _ttp_opts, key="sigma_sel")
+        with _sigma_c2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            _sigma_btn = st.button("Generate Sigma Rule", key="sigma_btn", use_container_width=True)
+        if _sigma_btn and _sel_ttp and _sel_ttp != "— choose —":
+            _ttp_id = _sel_ttp.split(" ")[0]
+            _sigma_prompt = (
+                f"Generate a complete, production-ready Sigma YAML detection rule for MITRE ATT&CK technique {_ttp_id}. "
+                "Include: title, id (random UUID), status: experimental, description, references (MITRE URL), "
+                "logsource (product: windows or linux as appropriate), detection with condition, "
+                "falsepositives list, level (critical/high/medium/low), and tags (attack.technique). "
+                "Output ONLY valid YAML, no explanations."
+            )
+            st.session_state.analyst_messages.append({"role": "user", "content": _sigma_prompt})
+            st.rerun(scope="fragment")
+
+    # ── Render conversation history ────────────────────────────────────────────
+    for msg in st.session_state.analyst_messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    # ── Generate a response if the last message is from the user ─────────────
+    needs_reply = (
+        bool(st.session_state.analyst_messages)
+        and st.session_state.analyst_messages[-1]["role"] == "user"
+    )
+    if needs_reply and any_backend:
+        system_content = _ANALYST_SYSTEM.format(context=_ctx)
+        llm_messages = [{"role": "system", "content": system_content}]
+        for m in st.session_state.analyst_messages[-10:]:
+            llm_messages.append({"role": m["role"], "content": m["content"]})
+
+        with st.chat_message("assistant"):
+            with st.spinner("Analysing threat data…"):
+                reply = analyst_reply(llm_messages)
+            st.markdown(reply)
+
+        st.session_state.analyst_messages.append({"role": "assistant", "content": reply})
+
+    # ── Chat input for follow-up questions ────────────────────────────────────
+    if user_input := st.chat_input("Ask anything about your threat intelligence…"):
+        st.session_state.analyst_messages.append({"role": "user", "content": user_input})
+        st.rerun(scope="fragment")
+
+    # ── Clear button ──────────────────────────────────────────────────────────
+    if st.session_state.analyst_messages:
+        if st.button("✕  Clear conversation", key="clear_analyst"):
+            st.session_state.analyst_messages = []
+            st.rerun(scope="fragment")
+
 
 # ─── Main navigation (option_menu — programmatic selection via _nav_select) ──
 _NAV_PAGES = [
@@ -3157,135 +3286,10 @@ elif active_page == "ATT&CK":
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# AI ANALYST
+# AI ANALYST  (fragment isolates chat reruns from the nav bar)
 # ══════════════════════════════════════════════════════════════════════════════
 elif active_page == "AI Analyst":
-    st.markdown('<p class="section-label"><i class="bi bi-cpu-fill bi-sm icon-accent"></i>&nbsp; AI Threat Intelligence Analyst</p>', unsafe_allow_html=True)
-
-    # ── Backend status (live health checks) ───────────────────────────────────
-    ollama_ok   = _ollama_up()
-    lmstudio_ok = _lmstudio_up()
-
-    chain = []
-    # Show exactly what was loaded from the env so the user can verify
-    model_list = ", ".join(_LOCAL_MODELS)
-    ok_icon  = '<i class="bi bi-circle-fill icon-ok"  style="font-size:0.55rem"></i>'
-    off_icon = '<i class="bi bi-circle-fill icon-muted" style="font-size:0.55rem"></i>'
-    cld_icon = '<i class="bi bi-cloud-fill icon-accent" style="font-size:0.7rem"></i>'
-    chain.append(
-        (f"{ok_icon} Ollama [{model_list}]" if ollama_ok else f"{off_icon} Ollama offline [{model_list}]")
-    )
-    if _LMSTUDIO_URL:
-        chain.append((ok_icon if lmstudio_ok else off_icon) + f" LM Studio [{_LMSTUDIO_MDL}]")
-    if _CLAUDE_KEY:
-        chain.append(f"{cld_icon} Claude (fallback)")
-    if _GEMINI_KEY:
-        chain.append(f"{cld_icon} Gemini (fallback)")
-
-    st.markdown(
-        '<div style="background:rgba(56,189,248,0.05);border:1px solid rgba(56,189,248,0.15);'
-        'border-radius:8px;padding:8px 14px;font-size:0.78rem;color:#4a6080;">'
-        '<i class="bi bi-cpu bi-sm icon-accent"></i>&nbsp; <strong style="color:#7aadcf">AI chain (local first):</strong>&nbsp; '
-        + '  <span style="color:#1e3a5f">›</span>  '.join(chain) + '</div>',
-        unsafe_allow_html=True,
-    )
-
-    any_backend = ollama_ok or lmstudio_ok or bool(_CLAUDE_KEY) or bool(_GEMINI_KEY)
-    if not any_backend:
-        st.error(
-            "**No AI backend reachable.** "
-            "Add `OLLAMA_MODELS=modelname` to `/opt/threat-intel-platform/.env` "
-            "and run `sudo docker compose up -d` on the server, "
-            "or set `CLAUDE_API_KEY` / `GEMINI_API_KEY` as a cloud fallback."
-        )
-
-    if "analyst_messages" not in st.session_state:
-        st.session_state.analyst_messages = []
-
-    _ctx = _build_context(reports, iocs, cves, techniques_df)
-
-    # ── Starter question buttons (shown only on empty conversation) ───────────
-    if not st.session_state.analyst_messages:
-        st.markdown('<span style="font-size:0.78rem;font-weight:700;color:#3d5a80;text-transform:uppercase;letter-spacing:0.1em"><i class="bi bi-stars bi-sm icon-accent"></i>&nbsp; Suggested questions</span>', unsafe_allow_html=True)
-        starters = [
-            "What are the most active threat actors right now?",
-            "Which ATT&CK tactics are most commonly observed?",
-            "List the critical CVEs and recommended patches.",
-            "What malware families appear most frequently?",
-            "Which industries are being targeted the most?",
-            "What TTPs should I prioritise for detection rules?",
-            "Give me an executive summary of current threats.",
-            "Generate a Sigma detection rule for the most common TTP observed.",
-        ]
-        cols = st.columns(2)
-        for i, q in enumerate(starters):
-            if cols[i % 2].button(q, key=f"starter_{i}", use_container_width=True):
-                # Store the question; the response logic below will pick it up
-                st.session_state.analyst_messages.append({"role": "user", "content": q})
-                st.rerun()
-
-    # ── Sigma rule quick-generate ─────────────────────────────────────────────
-    with st.expander("◆  Quick-generate Sigma detection rules", expanded=False):
-        st.markdown(
-            '<span style="font-size:0.78rem;color:#5a7fa8;">Generate YAML Sigma rules from your top observed TTPs — '
-            'ready to import into Splunk, Elastic, or any Sigma-compatible SIEM.</span>',
-            unsafe_allow_html=True,
-        )
-        _sigma_c1, _sigma_c2 = st.columns([3, 1])
-        with _sigma_c1:
-            _top_ttps = sorted(ttp_usage.items(), key=lambda x: -(x[1].get("count", 0) if isinstance(x[1], dict) else int(x[1])))[:10]
-            _ttp_opts = [f"{t} ({v.get('count',0) if isinstance(v, dict) else v}×)" for t, v in _top_ttps]
-            _sel_ttp  = st.selectbox("Select TTP to generate rule for", ["— choose —"] + _ttp_opts, key="sigma_sel")
-        with _sigma_c2:
-            st.markdown("<br>", unsafe_allow_html=True)
-            _sigma_btn = st.button("Generate Sigma Rule", key="sigma_btn", use_container_width=True)
-        if _sigma_btn and _sel_ttp and _sel_ttp != "— choose —":
-            _ttp_id = _sel_ttp.split(" ")[0]
-            _sigma_prompt = (
-                f"Generate a complete, production-ready Sigma YAML detection rule for MITRE ATT&CK technique {_ttp_id}. "
-                "Include: title, id (random UUID), status: experimental, description, references (MITRE URL), "
-                "logsource (product: windows or linux as appropriate), detection with condition, "
-                "falsepositives list, level (critical/high/medium/low), and tags (attack.technique). "
-                "Output ONLY valid YAML, no explanations."
-            )
-            st.session_state.analyst_messages.append({"role": "user", "content": _sigma_prompt})
-            st.rerun()
-
-    # ── Render conversation history ────────────────────────────────────────────
-    for msg in st.session_state.analyst_messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-
-    # ── Generate a response if the last message is from the user ─────────────
-    # This handles BOTH chat_input submissions AND starter button clicks
-    # (starter buttons rerun the page with a pending user message but no reply).
-    needs_reply = (
-        bool(st.session_state.analyst_messages)
-        and st.session_state.analyst_messages[-1]["role"] == "user"
-    )
-    if needs_reply and any_backend:
-        system_content = _ANALYST_SYSTEM.format(context=_ctx)
-        llm_messages = [{"role": "system", "content": system_content}]
-        for m in st.session_state.analyst_messages[-10:]:
-            llm_messages.append({"role": m["role"], "content": m["content"]})
-
-        with st.chat_message("assistant"):
-            with st.spinner("Analysing threat data…"):
-                reply = analyst_reply(llm_messages)
-            st.markdown(reply)
-
-        st.session_state.analyst_messages.append({"role": "assistant", "content": reply})
-
-    # ── Chat input for follow-up questions ────────────────────────────────────
-    if user_input := st.chat_input("Ask anything about your threat intelligence…"):
-        st.session_state.analyst_messages.append({"role": "user", "content": user_input})
-        st.rerun()   # rerun so the message renders, then needs_reply fires above
-
-    # ── Clear button ──────────────────────────────────────────────────────────
-    if st.session_state.analyst_messages:
-        if st.button("✕  Clear conversation", key="clear_analyst"):
-            st.session_state.analyst_messages = []
-            st.rerun()
+    _ai_analyst_tab(reports, iocs, cves, techniques_df, ttp_usage)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3604,6 +3608,10 @@ elif active_page == "Watchlist":
                             from sqlalchemy import text as _text
                             _engine = get_engine()
                             with _engine.connect() as _conn:
+                                # Cascade-delete child rows first to avoid FK violations
+                                _conn.execute(_text("DELETE FROM asset_threat_profiles WHERE watched_asset_id = :id"), {"id": int(_aid)})
+                                _conn.execute(_text("DELETE FROM watchlist_hits WHERE watched_asset_id = :id"), {"id": int(_aid)})
+                                _conn.execute(_text("DELETE FROM cert_mentions WHERE watched_asset_id = :id"), {"id": int(_aid)})
                                 _conn.execute(_text("DELETE FROM watched_assets WHERE id = :id"), {"id": int(_aid)})
                                 _conn.commit()
                             load_watchlist_data.clear()
