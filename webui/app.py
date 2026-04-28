@@ -692,11 +692,16 @@ def load_campaigns_data():
 
 @st.cache_data(ttl=30)
 def load_enrichment_map(ioc_values: tuple) -> dict:
-    """Return a dict of ioc_value → enrichment row for the given values."""
+    """Return a dict of ioc_value → aggregated enrichment dict for the given values.
+
+    Multiple sources (virustotal, greynoise, shodan, local_ai) per IOC are
+    merged into a single flat dict of display-ready fields per IOC.
+    """
     if not ioc_values:
         return {}
     engine = get_engine()
     try:
+        import json as _json
         from sqlalchemy import text
         placeholders = ", ".join(f":v{i}" for i in range(len(ioc_values)))
         params = {f"v{i}": v for i, v in enumerate(ioc_values)}
@@ -705,7 +710,38 @@ def load_enrichment_map(ioc_values: tuple) -> dict:
                 text(f"SELECT * FROM ioc_enrichments WHERE ioc_value IN ({placeholders})"),
                 params,
             ).fetchall()
-        return {r._mapping["ioc_value"]: dict(r._mapping) for r in rows}
+
+        result: dict = {}
+        for r in rows:
+            m   = dict(r._mapping)
+            val = m["ioc_value"]
+            src = m.get("source", "")
+            if val not in result:
+                result[val] = {}
+            raw = {}
+            try:
+                raw = _json.loads(m.get("raw_data") or "{}")
+            except Exception:
+                pass
+            if src == "virustotal":
+                stats = (raw.get("data", {}).get("attributes", {})
+                            .get("last_analysis_stats", {}))
+                result[val]["vt_malicious_count"] = stats.get("malicious", m.get("score", 0))
+                result[val]["vt_verdict"]         = m.get("verdict", "")
+            elif src == "greynoise":
+                result[val]["greynoise_classification"] = (
+                    raw.get("classification") or m.get("verdict", "")
+                )
+            elif src == "shodan":
+                ports = raw.get("ports", [])
+                result[val]["shodan_ports"] = (
+                    ", ".join(str(p) for p in ports[:5]) if ports else ""
+                )
+            elif src == "local_ai":
+                syn = raw.get("synopsis", "")
+                if syn:
+                    result[val]["ai_synopsis"] = syn
+        return result
     except Exception:
         return {}
 
@@ -2414,14 +2450,32 @@ elif active_page == "Threat Feed":
   </div>
 </div>""", unsafe_allow_html=True)
 
-            with st.expander("Details", expanded=False):
+            _tf_ai_key = f"tf_ai_{row['id']}"
+            _tf_has_ai = bool(st.session_state.get(_tf_ai_key))
+            with st.expander("Details", expanded=_tf_has_ai):
                 st.markdown(
                     _severity_badge(conf) + f'&nbsp; <span class="feed-tag">{feed}</span>',
                     unsafe_allow_html=True,
                 )
-                summary = row.get("summary")
+
+                summary = str(row.get("summary") or "").strip()
+                raw     = str(row.get("raw_source") or "").strip()
+
+                # Show summary if enriched, otherwise show the raw source as context
                 if summary:
-                    st.markdown(f"> {summary}")
+                    st.markdown(
+                        f'<div style="background:rgba(56,189,248,0.04);border-left:3px solid #38bdf840;'
+                        f'padding:8px 12px;border-radius:0 6px 6px 0;font-size:0.85rem;'
+                        f'color:#8fb0d0;margin-bottom:8px;">{summary}</div>',
+                        unsafe_allow_html=True,
+                    )
+                elif raw:
+                    st.markdown(
+                        f'<div style="background:rgba(255,255,255,0.02);border-left:3px solid #1e3a5f;'
+                        f'padding:8px 12px;border-radius:0 6px 6px 0;font-size:0.82rem;'
+                        f'color:#5a7fa8;margin-bottom:8px;">{raw[:500]}{"…" if len(raw) > 500 else ""}</div>',
+                        unsafe_allow_html=True,
+                    )
 
                 col_l, col_r = st.columns(2)
                 with col_l:
@@ -2441,9 +2495,30 @@ elif active_page == "Threat Feed":
                         cols = [c for c in ["ioc_type", "value", "malware_family"] if c in report_iocs.columns]
                         st.dataframe(report_iocs[cols].head(8), use_container_width=True, hide_index=True)
 
-                raw = str(row.get("raw_source") or "")
-                if st.toggle("Show raw source", key=f"raw_{row['id']}"):
-                    st.code(raw[:800] + ("…" if len(raw) > 800 else ""), language="text")
+                if raw and st.toggle("Show raw source", key=f"raw_{row['id']}"):
+                    st.code(raw[:1200] + ("…" if len(raw) > 1200 else ""), language="text")
+
+                # ── Per-report AI analysis ─────────────────────────────────────
+                st.markdown("---")
+                if not _tf_has_ai:
+                    if st.button("Generate AI Analysis", key=f"btn_{_tf_ai_key}", type="primary"):
+                        _tf_ctx = (
+                            f"Feed: {feed}. Actor: {actor}. Confidence: {conf}%. "
+                            + (f"Summary: {summary}. " if summary else "")
+                            + (f"Raw intelligence: {raw[:600]}. " if raw and not summary else "")
+                            + (f"TTPs: {', '.join(ttps[:8])}. " if ttps else "")
+                            + (f"IOC count: {len(report_iocs) if not report_iocs.empty else 0}.")
+                        )
+                        with st.spinner("Generating threat analysis…"):
+                            st.session_state[_tf_ai_key] = _drill_ai_analysis(
+                                "Threat Report", f"{feed} — {actor}", _tf_ctx
+                            )
+                        st.rerun()
+                else:
+                    st.markdown(st.session_state[_tf_ai_key])
+                    if st.button("↺ Refresh", key=f"clr_{_tf_ai_key}"):
+                        del st.session_state[_tf_ai_key]
+                        st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2561,20 +2636,61 @@ elif active_page == "Actors":
             for a in actor_data:
                 badge      = _severity_badge(a["avg_conf"])
                 is_pinned  = (a["actor"] == _pinned_actor)
-                with st.expander(f"**{a['actor']}** — {a['reports']} report(s)", expanded=is_pinned):
+                _ai_key    = f"actor_ai_{a['actor']}"
+                _has_ai    = bool(st.session_state.get(_ai_key))
+                # Keep expander open when analysis is ready so result is visible
+                with st.expander(f"**{a['actor']}** — {a['reports']} report(s)", expanded=is_pinned or _has_ai):
+
+                    # ── Pull all reports for this canonical actor ─────────────
+                    actor_reports_df = _actor_rpts[_actor_rpts["_canon"] == a["actor"]]
+
+                    # ── Actor description from profile records ─────────────────
+                    _profile_rpts = actor_reports_df[actor_reports_df["source_feed"] == "apt_groups"]
+                    _description  = ""
+                    _aliases_str  = ""
+                    _origin       = ""
+                    for _, _pr in _profile_rpts.iterrows():
+                        raw = str(_pr.get("raw_source") or "")
+                        if raw:
+                            # Extract key fields from the structured raw_source text
+                            import re as _rex
+                            _aka = _rex.search(r"Also known as: ([^.]+)\.", raw)
+                            _ori = _rex.search(r"Country of origin: ([^.]+)\.", raw)
+                            _desc_m = _rex.search(r"Description: (.+?)(?:Reference:|$)", raw, _rex.DOTALL)
+                            if _aka: _aliases_str = _aka.group(1).strip()
+                            if _ori: _origin = _ori.group(1).strip()
+                            if _desc_m: _description = _desc_m.group(1).strip()[:800]
+                        if _description:
+                            break
+
+                    # ── Header metadata strip ─────────────────────────────────
                     c1, c2, c3 = st.columns(3)
                     with c1:
                         st.markdown("**Confidence**")
                         st.markdown(badge, unsafe_allow_html=True)
+                        if _origin:
+                            st.markdown(f"**Origin:** {_origin}")
                     with c2:
                         st.markdown("**Sources**")
                         for f in a["feeds"]:
                             st.markdown(f'<span class="feed-tag">{f.upper()}</span>', unsafe_allow_html=True)
+                        if _aliases_str:
+                            st.markdown(f"**Also known as:** {_aliases_str}")
                     with c3:
                         if a["industries"]:
                             st.markdown("**Target Industries**")
                             for ind, cnt in sorted(a["industries"].items(), key=lambda x: -x[1]):
                                 st.caption(f"{ind} ({cnt})")
+
+                    # ── Actor profile description ──────────────────────────────
+                    if _description:
+                        st.markdown("**Profile**")
+                        st.markdown(
+                            f'<div style="background:rgba(56,189,248,0.04);border-left:3px solid #38bdf840;'
+                            f'padding:10px 14px;border-radius:0 6px 6px 0;font-size:0.85rem;'
+                            f'color:#8fb0d0;margin-bottom:8px;">{_description}</div>',
+                            unsafe_allow_html=True,
+                        )
 
                     if a["ttps"]:
                         st.markdown("**Observed TTPs**")
@@ -2585,24 +2701,41 @@ elif active_page == "Actors":
                         st.markdown("**Associated CVEs**")
                         st.markdown("  ".join(f"`{c}`" for c in a["cves"][:10]))
 
-                    # IOCs attributed to this actor (match all aliases that resolved to this canonical)
-                    _canon_nk = _actor_norm(a["actor"])
-                    actor_reports_df = _actor_rpts[_actor_rpts["_canon"] == a["actor"]]
-                    actor_iocs_df    = iocs[iocs["report_id"].isin(actor_reports_df["id"])]
+                    actor_iocs_df = iocs[iocs["report_id"].isin(actor_reports_df["id"])]
                     if not actor_iocs_df.empty:
                         st.markdown(f"**IOCs ({min(len(actor_iocs_df), 20)} shown)**")
                         cols = [c for c in ["ioc_type", "value", "malware_family"] if c in actor_iocs_df.columns]
                         st.dataframe(actor_iocs_df[cols].head(20), use_container_width=True, hide_index=True)
 
-                    # Opt-in AI analysis button
-                    _ai_key = f"actor_ai_{a['actor']}"
-                    context_str = (
-                        f"TTPs: {', '.join(a['ttps'][:10])}. "
-                        f"CVEs: {', '.join(a['cves'][:5])}. "
-                        f"Feeds: {', '.join(a['feeds'])}. "
-                        f"Industries: {', '.join(a['industries'].keys())}."
-                    )
-                    if _ai_key not in st.session_state:
+                    # ── AI Analysis ───────────────────────────────────────────
+                    # Build rich context: profile description + observed intelligence
+                    _ctx_parts = []
+                    if _description:
+                        _ctx_parts.append(f"Actor profile: {_description[:500]}")
+                    if _aliases_str:
+                        _ctx_parts.append(f"Also known as: {_aliases_str}")
+                    if _origin:
+                        _ctx_parts.append(f"Attributed to: {_origin}")
+                    if a["ttps"]:
+                        _ctx_parts.append(f"Observed TTPs: {', '.join(a['ttps'][:15])}")
+                    if a["cves"]:
+                        _ctx_parts.append(f"Associated CVEs: {', '.join(a['cves'][:8])}")
+                    if a["industries"]:
+                        _ctx_parts.append(f"Target industries: {', '.join(a['industries'].keys())}")
+                    if a["feeds"]:
+                        _ctx_parts.append(f"Intelligence sources: {', '.join(a['feeds'])}")
+                    # Include summaries from non-profile reports
+                    _op_summaries = [
+                        str(r.get("summary") or "")
+                        for _, r in actor_reports_df[actor_reports_df["source_feed"] != "apt_groups"].iterrows()
+                        if r.get("summary")
+                    ][:3]
+                    if _op_summaries:
+                        _ctx_parts.append("Recent intelligence: " + " | ".join(_op_summaries))
+                    context_str = ". ".join(_ctx_parts)
+
+                    st.markdown("---")
+                    if not _has_ai:
                         if st.button(
                             f"Generate AI Analysis for {a['actor']}",
                             key=f"btn_{_ai_key}",
@@ -2614,9 +2747,8 @@ elif active_page == "Actors":
                                 )
                             st.rerun()
                     else:
-                        st.markdown("---")
                         st.markdown(st.session_state[_ai_key])
-                        if st.button("Clear Analysis", key=f"clr_{_ai_key}"):
+                        if st.button("↺ Refresh Analysis", key=f"clr_{_ai_key}"):
                             del st.session_state[_ai_key]
                             st.rerun()
 
@@ -2995,12 +3127,20 @@ elif active_page == "IOC Hunt":
                     if _sh_ports:
                         _ports = str(_sh_ports)[:30]
                         _enr_html += f'<span class="badge-medium" title="Shodan open ports">⊞ {_ports}</span> '
+                _ai_syn = _enr.get("ai_synopsis", "")
                 st.markdown(
                     f'<span class="badge-info">{itype}</span> &nbsp;'
                     f'<span class="ioc-val">{val}</span>'
                     + (f' &nbsp; <span style="color:#6e7fa3;font-size:0.78rem">({fam})</span>' if fam else "")
                     + (f' &nbsp; {_enr_html}' if _enr_html else "")
-                    + f'<br/><span style="font-size:0.75rem;color:#3d5a80"><i class="bi bi-box-arrow-up-right"></i> {links}</span>',
+                    + f'<br/><span style="font-size:0.75rem;color:#3d5a80"><i class="bi bi-box-arrow-up-right"></i> {links}</span>'
+                    + (
+                        f'<div style="margin:4px 0 8px 0;padding:6px 10px;background:rgba(56,189,248,0.04);'
+                        f'border-left:2px solid #38bdf840;border-radius:0 4px 4px 0;'
+                        f'font-size:0.78rem;color:#7aadcf;">'
+                        f'<i class="bi bi-robot" style="color:#38bdf8;font-size:0.7rem"></i>&nbsp;{_ai_syn}</div>'
+                        if _ai_syn else ""
+                    ),
                     unsafe_allow_html=True,
                 )
         st.divider()

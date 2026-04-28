@@ -40,6 +40,12 @@ log = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = 10  # seconds
 
+# ─── Local AI configuration (Ollama) ─────────────────────────────────────────
+# AI enrichment generates threat-context narratives without consuming any
+# API quota — it's a free complement to VT/GreyNoise reputation scoring.
+_OLLAMA_URL    = os.getenv("OLLAMA_URL", "http://ollama:11434")
+_OLLAMA_MODELS = [m.strip() for m in os.getenv("OLLAMA_MODELS", "").split(",") if m.strip()]
+
 # ─── Budget configuration ──────────────────────────────────────────────────────
 
 VT_DAILY_LIMIT   = 450   # Hard cap; leave 50 calls as manual-investigation buffer
@@ -313,6 +319,62 @@ def _shodan_enrich(ip: str, api_key: str) -> Optional[dict]:
         return None
 
 
+# ─── Local AI context enrichment ─────────────────────────────────────────────
+
+def _local_ai_enrich(
+    ioc_value: str,
+    ioc_type: str,
+    malware_family: str,
+    feed_context: str,
+) -> Optional[dict]:
+    """
+    Use local Ollama to generate a 2-3 sentence threat context synopsis for an IOC.
+
+    This replaces VirusTotal as the source of THREAT CONTEXT (what the malware
+    does, how it operates, recommended defences).  VirusTotal remains the
+    authoritative source of REPUTATION (is this IOC malicious right now).
+
+    No API key, no quota, no cost — completely free.
+    Returns None when Ollama is not configured or unreachable.
+    """
+    if not _OLLAMA_MODELS:
+        return None
+    # Require at least malware family or feed context to generate meaningful output
+    if not malware_family and not feed_context:
+        return None
+
+    prompt = (
+        "You are a threat intelligence analyst. In 2-3 concise sentences describe:\n"
+        "1) What this threat does and how it typically operates\n"
+        "2) The most important immediate defensive action\n\n"
+        f"IOC type: {ioc_type}\n"
+        + (f"Malware / threat family: {malware_family}\n" if malware_family else "")
+        + (f"Feed context: {feed_context[:300]}\n" if feed_context else "")
+        + "\nDo not repeat the IOC value. Be specific and actionable."
+    )
+
+    for model in _OLLAMA_MODELS:
+        try:
+            resp = requests.post(
+                f"{_OLLAMA_URL}/api/generate",
+                json={"model": model, "prompt": prompt, "stream": False},
+                timeout=25,
+            )
+            if resp.ok:
+                text = resp.json().get("response", "").strip()
+                if text:
+                    log.debug(f"[local_ai] Generated synopsis for {ioc_type} ({model})")
+                    return {
+                        "score":    0,
+                        "verdict":  "context",
+                        "raw_data": json.dumps({"synopsis": text, "model": model}),
+                    }
+        except Exception as exc:
+            log.debug(f"[local_ai] Ollama call failed ({model}): {exc}")
+
+    return None
+
+
 # ─── Persistence ──────────────────────────────────────────────────────────────
 
 def _save_enrichment(
@@ -458,6 +520,25 @@ def enrich_ioc(ioc_value: str, ioc_type: str, db_session: Session) -> dict:
 
     elif not vt_key:
         log.debug("[enrichment] VT key not configured — skipping VirusTotal")
+
+    # ── Local AI context (zero quota cost) ────────────────────────────────────
+    # Generates a threat narrative using Ollama when a malware family is known.
+    # Cached 7 days (context is not time-sensitive).  Runs regardless of
+    # whether VT/GN returned results — context and reputation are complementary.
+    if _OLLAMA_MODELS and not _is_fresh(ioc_value, "local_ai", db_session):
+        try:
+            ioc_row = db_session.query(IOC).filter_by(value=ioc_value).first()
+            _mal_fam    = (ioc_row.malware_family or "") if ioc_row else ""
+            _feed_ctx   = ""   # feed context not needed when family is known
+            ai = _local_ai_enrich(ioc_value, ioc_type, _mal_fam, _feed_ctx)
+            if ai:
+                _save_enrichment(
+                    ioc_value, ioc_type, "local_ai",
+                    ai["score"], ai["verdict"], ai["raw_data"], db_session
+                )
+                results["local_ai"] = ai
+        except Exception as exc:
+            log.debug(f"[local_ai] Skipped for '{ioc_value}': {exc}")
 
     return results
 
