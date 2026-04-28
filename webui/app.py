@@ -2466,9 +2466,47 @@ elif active_page == "Actors":
     if reports.empty:
         st.info("No threat data yet.")
     else:
-        # Aggregate by actor
+        import re as _re
+
+        # Feeds that carry infrastructure data, not named actor intelligence
+        _INFRA_FEEDS = frozenset({
+            "spamhaus", "dshield", "cert_transparency",
+            "github_monitor", "sslbl", "openphish", "nvd", "cisa_kev",
+        })
+
+        def _actor_norm(name: str) -> str:
+            """Dedup key: lowercase, collapse all whitespace / dashes / dots."""
+            return _re.sub(r'[\s\-_.‐-―]+', '', name).lower()
+
+        # Filter to named-actor reports only
+        _actor_rpts = reports[
+            reports["threat_actor"].notna()
+            & (reports["threat_actor"].str.strip() != "")
+            & (reports["threat_actor"] != "Unknown")
+            & ~reports["source_feed"].isin(_INFRA_FEEDS)
+        ].copy()
+
+        # Build norm-key → canonical name mapping
+        # Canonical = the spelling that appears in the most reports
+        _norm_counts: dict[str, dict[str, int]] = {}   # normkey → {spelling: count}
+        for actor_name, grp in _actor_rpts.groupby("threat_actor"):
+            nk = _actor_norm(actor_name)
+            _norm_counts.setdefault(nk, {})[actor_name] = (
+                _norm_counts.get(nk, {}).get(actor_name, 0) + len(grp)
+            )
+        # Canonical = spelling with most rows; tie-break = shorter/alphabetic
+        _canon: dict[str, str] = {
+            nk: max(spellings.items(), key=lambda kv: (kv[1], -len(kv[0])))[0]
+            for nk, spellings in _norm_counts.items()
+        }
+        # Add canonical column so we can groupby it
+        _actor_rpts["_canon"] = _actor_rpts["threat_actor"].map(
+            lambda n: _canon.get(_actor_norm(n), n)
+        )
+
+        # Aggregate by canonical name
         actor_data = []
-        for actor, grp in reports[reports["threat_actor"] != "Unknown"].groupby("threat_actor"):
+        for actor, grp in _actor_rpts.groupby("_canon"):
             all_ttps: set = set()
             all_cves: set = set()
             all_feeds: set = set(grp["source_feed"].dropna().tolist())
@@ -2485,7 +2523,7 @@ elif active_page == "Actors":
                     except Exception: raw_c = []
                 all_cves.update(raw_c or [])
                 ind = str(row.get("target_industry") or "Unknown")
-                if ind != "Unknown":
+                if ind and ind != "Unknown":
                     industries[ind] = industries.get(ind, 0) + 1
             actor_data.append({
                 "actor": actor,
@@ -2497,8 +2535,12 @@ elif active_page == "Actors":
                 "industries": industries,
             })
 
-        # Pinned actor sorts to top
-        actor_data.sort(key=lambda x: (0 if x["actor"] == _pinned_actor else 1, -x["reports"]))
+        # Pinned actor sorts to top; secondary sort by report count
+        _pinned_norm = _actor_norm(_pinned_actor) if _pinned_actor else ""
+        actor_data.sort(key=lambda x: (
+            0 if _actor_norm(x["actor"]) == _pinned_norm else 1,
+            -x["reports"],
+        ))
 
         if not actor_data:
             st.info("Actor profiles populate as the AI enrichment runs (may take a few cycles).")
@@ -2543,8 +2585,9 @@ elif active_page == "Actors":
                         st.markdown("**Associated CVEs**")
                         st.markdown("  ".join(f"`{c}`" for c in a["cves"][:10]))
 
-                    # IOCs attributed to this actor
-                    actor_reports_df = reports[reports["threat_actor"] == a["actor"]]
+                    # IOCs attributed to this actor (match all aliases that resolved to this canonical)
+                    _canon_nk = _actor_norm(a["actor"])
+                    actor_reports_df = _actor_rpts[_actor_rpts["_canon"] == a["actor"]]
                     actor_iocs_df    = iocs[iocs["report_id"].isin(actor_reports_df["id"])]
                     if not actor_iocs_df.empty:
                         st.markdown(f"**IOCs ({min(len(actor_iocs_df), 20)} shown)**")

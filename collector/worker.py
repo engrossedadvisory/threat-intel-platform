@@ -516,11 +516,10 @@ def _process_dshield(db: Session, items: list) -> int:
             f"Network: {network}. ASN: {asn}. "
             f"This IP appears in the SANS Internet Storm Center top attacking sources list."
         )
-        actor = f"DShield/{country}" if country else "DShield"
         report = ThreatReport(
             source_feed="dshield",
             source_id=source_id,
-            threat_actor=actor,
+            threat_actor="Unknown",   # DShield records attacking IPs, not named actors
             confidence_score=80,
             raw_source=raw[:2000],
             summary=f"Top attacking IP {ip} ({country}), {attacks} attacks recorded by SANS ISC.",
@@ -797,7 +796,7 @@ def _process_spamhaus(db: Session, items: list) -> int:
         report = ThreatReport(
             source_feed="spamhaus",
             source_id=source_id,
-            threat_actor="Spamhaus Listed",
+            threat_actor="Unknown",   # infrastructure data — not a named threat actor
             confidence_score=85,
             raw_source=raw[:2000],
             summary=f"Spamhaus blocked IP range {cidr} ({sbl_ref}).",
