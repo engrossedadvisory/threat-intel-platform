@@ -515,6 +515,340 @@ def stats(_auth=AUTH):
 
 
 # ---------------------------------------------------------------------------
+# Dashboard aggregations (React frontend)
+# ---------------------------------------------------------------------------
+
+_INFRA_FEEDS = (
+    "'spamhaus','dshield','cert_transparency','github_monitor',"
+    "'sslbl','openphish','nvd','cisa_kev','apt_groups'"
+)
+
+
+@app.get("/api/v1/dashboard", tags=["dashboard"])
+def dashboard(_auth=AUTH):
+    """Single endpoint returning all data needed for the Dashboard page."""
+    with engine.connect() as conn:
+
+        # Activity over last 30 days: IOC count + report count per day
+        activity_rows = conn.execute(text(
+            "SELECT DATE(created_at) AS date, COUNT(*) AS iocs "
+            "FROM iocs WHERE created_at >= NOW() - INTERVAL '30 days' "
+            "GROUP BY DATE(created_at) ORDER BY date"
+        )).fetchall()
+        report_rows = conn.execute(text(
+            "SELECT DATE(created_at) AS date, COUNT(*) AS reports "
+            "FROM threat_reports WHERE created_at >= NOW() - INTERVAL '30 days' "
+            "GROUP BY DATE(created_at) ORDER BY date"
+        )).fetchall()
+        ioc_by_day    = {str(r[0]): r[1] for r in activity_rows}
+        report_by_day = {str(r[0]): r[1] for r in report_rows}
+        all_days = sorted(set(ioc_by_day) | set(report_by_day))
+        activity = [{"date": d, "iocs": ioc_by_day.get(d, 0),
+                     "reports": report_by_day.get(d, 0)} for d in all_days]
+
+        # Risk distribution by confidence bucket
+        risk_rows = conn.execute(text(
+            "SELECT "
+            "  CASE WHEN confidence_score >= 90 THEN 'Critical' "
+            "       WHEN confidence_score >= 75 THEN 'High' "
+            "       WHEN confidence_score >= 55 THEN 'Medium' "
+            "       WHEN confidence_score >= 30 THEN 'Low' "
+            "       ELSE 'Info' END AS name, "
+            "  COUNT(*) AS value "
+            "FROM threat_reports WHERE confidence_score IS NOT NULL "
+            "GROUP BY 1 ORDER BY MIN(confidence_score) DESC"
+        )).fetchall()
+        risk_dist = [{"name": r[0], "value": r[1]} for r in risk_rows]
+
+        # Top operational actors (exclude infra + profile feeds)
+        actor_rows = conn.execute(text(
+            f"SELECT threat_actor, COUNT(*) AS report_count, "
+            f"AVG(confidence_score) AS avg_conf "
+            f"FROM threat_reports "
+            f"WHERE threat_actor IS NOT NULL AND threat_actor != 'Unknown' "
+            f"  AND source_feed NOT IN ({_INFRA_FEEDS}) "
+            f"GROUP BY threat_actor HAVING COUNT(*) >= 2 "
+            f"ORDER BY report_count DESC LIMIT 20"
+        )).fetchall()
+        top_actors = [{"threat_actor": r[0], "report_count": r[1],
+                       "avg_conf": float(r[2] or 0)} for r in actor_rows]
+
+        # Top TTPs
+        ttp_rows = conn.execute(text(
+            "SELECT t.technique_id, t.name, COUNT(*) AS count "
+            "FROM mitre_techniques t "
+            "JOIN threat_reports r ON r.ttps::text ILIKE '%' || t.technique_id || '%' "
+            "WHERE r.ttps IS NOT NULL AND r.ttps != '[]' "
+            "GROUP BY t.technique_id, t.name "
+            "ORDER BY count DESC LIMIT 15"
+        )).fetchall()
+        top_ttps = [{"technique_id": r[0], "name": r[1], "count": r[2]}
+                    for r in ttp_rows]
+
+        # Recent alerts
+        alert_rows = conn.execute(text(
+            "SELECT h.severity, h.context, h.found_at, h.hit_type, "
+            "       a.value AS asset_value, a.label "
+            "FROM watchlist_hits h "
+            "LEFT JOIN watched_assets a ON a.id = h.watched_asset_id "
+            "ORDER BY h.found_at DESC LIMIT 20"
+        )).fetchall()
+        recent_alerts = [
+            {"severity": r[0], "context": r[1],
+             "found_at": r[2].isoformat() if r[2] else None,
+             "hit_type": r[3], "asset_value": r[4], "label": r[5]}
+            for r in alert_rows
+        ]
+
+    return {
+        "activity":      activity,
+        "risk_dist":     risk_dist,
+        "top_actors":    top_actors,
+        "top_ttps":      top_ttps,
+        "recent_alerts": recent_alerts,
+    }
+
+
+@app.get("/api/v1/feed-status", tags=["dashboard"])
+def feed_status(_auth=AUTH):
+    """Feed health — last run time, status, error, and total records per feed."""
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT feed_name, status, last_run, last_success, "
+            "       records_fetched, total_records, error_message "
+            "FROM feed_status ORDER BY feed_name"
+        )).fetchall()
+        return {"data": [
+            {
+                "feed_name":       r[0],
+                "status":          r[1],
+                "last_run":        r[2].isoformat() if r[2] else None,
+                "last_success":    r[3].isoformat() if r[3] else None,
+                "records_fetched": r[4],
+                "total_records":   r[5],
+                "error_message":   r[6],
+            }
+            for r in rows
+        ]}
+
+
+@app.get("/api/v1/actors/operational", tags=["actors"])
+def operational_actors(_auth=AUTH):
+    """Actors split into active (operational reports) and profiles (apt_groups only)."""
+    with engine.connect() as conn:
+        # Active: actors with reports from operational feeds
+        active_rows = conn.execute(text(
+            f"SELECT r.threat_actor, COUNT(*) AS report_count, "
+            f"AVG(r.confidence_score) AS avg_conf, "
+            f"STRING_AGG(DISTINCT r.source_feed, ',') AS feeds, "
+            f"STRING_AGG(DISTINCT r.target_industry, ',') AS target_industry "
+            f"FROM threat_reports r "
+            f"WHERE r.threat_actor IS NOT NULL AND r.threat_actor != 'Unknown' "
+            f"  AND r.source_feed NOT IN ({_INFRA_FEEDS}) "
+            f"GROUP BY r.threat_actor ORDER BY report_count DESC"
+        )).fetchall()
+
+        # Enrich active actors with profile data (aliases, origin, description)
+        profile_map = {}
+        profile_rows = conn.execute(text(
+            "SELECT threat_actor, raw_source FROM threat_reports "
+            "WHERE source_feed = 'apt_groups'"
+        )).fetchall()
+        import re as _re
+        for pr in profile_rows:
+            name = str(pr[0] or '').strip()
+            raw  = str(pr[1] or '')
+            if not name:
+                continue
+            aka = _re.search(r"Also known as: ([^.]+)\.", raw)
+            ori = _re.search(r"Country of origin: ([^.]+)\.", raw)
+            des = _re.search(r"Description: (.+?)(?:Reference:|$)", raw, _re.DOTALL)
+            profile_map[name.lower()] = {
+                "aliases":     aka.group(1).strip() if aka else "",
+                "origin":      ori.group(1).strip() if ori else "",
+                "description": des.group(1).strip()[:800] if des else "",
+            }
+
+        active_norms = set()
+        active = []
+        for r in active_rows:
+            actor = str(r[0])
+            norm  = actor.lower()
+            active_norms.add(norm)
+            prof  = profile_map.get(norm, {})
+            feeds_list = [f for f in (r[3] or '').split(',') if f]
+            active.append({
+                "threat_actor":    actor,
+                "report_count":    r[1],
+                "avg_conf":        float(r[2] or 0),
+                "feeds":           feeds_list,
+                "target_industry": r[4] or "",
+                "aliases":         prof.get("aliases", ""),
+                "origin":          prof.get("origin", ""),
+                "description":     prof.get("description", ""),
+                "ttps":            [],
+                "cves":            [],
+            })
+
+        # Profile-only: apt_groups actors not in active set
+        profiles = []
+        seen = set()
+        for pr in profile_rows:
+            name = str(pr[0] or '').strip()
+            if not name or name == 'Unknown' or name.lower() in active_norms:
+                continue
+            if name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            raw  = str(pr[1] or '')
+            aka = _re.search(r"Also known as: ([^.]+)\.", raw)
+            ori = _re.search(r"Country of origin: ([^.]+)\.", raw)
+            des = _re.search(r"Description: (.+?)(?:Reference:|$)", raw, _re.DOTALL)
+            profiles.append({
+                "threat_actor": name,
+                "report_count": 0,
+                "avg_conf":     70,
+                "feeds":        ["apt_groups"],
+                "aliases":      aka.group(1).strip() if aka else "",
+                "origin":       ori.group(1).strip() if ori else "",
+                "description":  des.group(1).strip()[:800] if des else "",
+                "ttps":         [],
+                "cves":         [],
+            })
+
+    return {"active": active, "profiles": profiles}
+
+
+@app.get("/api/v1/iocs/by-type", tags=["iocs"])
+def iocs_by_type(_auth=AUTH):
+    """IOC counts grouped by type, for pie chart."""
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT ioc_type, COUNT(*) AS count "
+            "FROM iocs GROUP BY ioc_type ORDER BY count DESC"
+        )).fetchall()
+        return {"data": [{"ioc_type": r[0], "count": r[1]} for r in rows]}
+
+
+@app.get("/api/v1/iocs/activity", tags=["iocs"])
+def ioc_activity(_auth=AUTH):
+    """IOC counts per day for the last 30 days."""
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT DATE(created_at) AS date, COUNT(*) AS count "
+            "FROM iocs WHERE created_at >= NOW() - INTERVAL '30 days' "
+            "GROUP BY DATE(created_at) ORDER BY date"
+        )).fetchall()
+        return {"data": [{"date": str(r[0]), "count": r[1]} for r in rows]}
+
+
+@app.get("/api/v1/ttps/usage", tags=["mitre"])
+def ttp_usage(_auth=AUTH):
+    """MITRE technique IDs observed in threat reports, with occurrence counts."""
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT t.technique_id, t.name, COUNT(*) AS count "
+            "FROM mitre_techniques t "
+            "JOIN threat_reports r ON r.ttps::text ILIKE '%' || t.technique_id || '%' "
+            "WHERE r.ttps IS NOT NULL AND r.ttps != '[]' "
+            "GROUP BY t.technique_id, t.name ORDER BY count DESC LIMIT 30"
+        )).fetchall()
+        return {"data": [{"technique_id": r[0], "name": r[1], "count": r[2]}
+                         for r in rows]}
+
+
+@app.get("/api/v1/darkweb", tags=["darkweb"])
+def list_darkweb(
+    severity: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    _auth=AUTH,
+):
+    """Dark web mentions, newest first."""
+    conditions = ["1=1"]
+    params: dict[str, Any] = {"limit": limit}
+    if severity:
+        conditions.append("severity = :sev")
+        params["sev"] = severity
+    where = " AND ".join(conditions)
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(f"SELECT * FROM dark_web_mentions WHERE {where} "
+                 f"ORDER BY first_seen DESC LIMIT :limit"),
+            params,
+        )
+        return {"data": rows_to_list(result)}
+
+
+@app.post("/api/v1/ai/query", tags=["ai"])
+def ai_query_endpoint(body: dict, _auth=AUTH):
+    """Proxy a free-form prompt to the configured local AI (Ollama)."""
+    import os as _os, requests as _req
+
+    prompt   = str(body.get("prompt", "")).strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="prompt required")
+
+    ollama_url = _os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
+    model      = _os.getenv("OLLAMA_PRIMARY_MODEL",
+                  _os.getenv("OLLAMA_MODELS", "").split(",")[0].strip()
+                  or _os.getenv("OLLAMA_MODEL", "llama3.2"))
+
+    try:
+        resp = _req.post(
+            f"{ollama_url}/api/generate",
+            json={"model": model, "prompt": prompt[:10000], "stream": False},
+            timeout=180,
+        )
+        resp.raise_for_status()
+        return {"response": resp.json().get("response", ""), "model": model}
+    except Exception as exc:
+        raise HTTPException(status_code=503,
+            detail=f"AI backend unavailable: {exc}") from exc
+
+
+@app.post("/api/v1/ai/analyze", tags=["ai"])
+def ai_analyze_endpoint(body: dict, _auth=AUTH):
+    """Run structured threat analysis via the local AI."""
+    import os as _os, requests as _req, json as _json
+
+    text_input = str(body.get("text", "")).strip()
+    context    = str(body.get("context", ""))
+    if not text_input:
+        raise HTTPException(status_code=400, detail="text required")
+
+    ollama_url = _os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
+    model      = _os.getenv("OLLAMA_PRIMARY_MODEL",
+                  _os.getenv("OLLAMA_MODELS", "").split(",")[0].strip()
+                  or _os.getenv("OLLAMA_MODEL", "llama3.2"))
+
+    prompt = (
+        "You are a CTI analyst. Analyze the following threat data and return a "
+        "JSON object with: threat_actor, target_industry, ttps (array), "
+        "associated_cves (array), confidence_score (0-100), summary (2-3 sentences).\n\n"
+        f"Data:\n{text_input[:6000]}"
+    )
+    if context:
+        prompt += f"\n\nAdditional context:\n{context[:2000]}"
+
+    try:
+        resp = _req.post(
+            f"{ollama_url}/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False, "format": "json"},
+            timeout=180,
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("response", "{}")
+        try:
+            result = _json.loads(raw)
+        except Exception:
+            result = {"summary": raw, "confidence_score": 50}
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=503,
+            detail=f"AI backend unavailable: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
 # Blocklists (plain-text, suitable for firewall import)
 # ---------------------------------------------------------------------------
 

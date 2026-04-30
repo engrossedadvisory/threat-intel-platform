@@ -52,6 +52,7 @@ services:
       - CLAUDE_API_KEY=${CLAUDE_API_KEY:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - OLLAMA_PRIMARY_MODEL=${OLLAMA_PRIMARY_MODEL:-gemma4:31b-cloud}
       - OLLAMA_MODELS=${OLLAMA_MODELS:-}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2}
       - LMSTUDIO_URL=${LMSTUDIO_URL:-}
@@ -72,32 +73,6 @@ services:
       - tor_net
     restart: unless-stopped
 
-  webui:
-    build: ./webui
-    ports:
-      - "${WEBUI_PORT:-8501}:8501"
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
-      - POSTGRES_HOST=db
-      - CLAUDE_API_KEY=${CLAUDE_API_KEY:-}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
-      - OLLAMA_MODELS=${OLLAMA_MODELS:-}
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2}
-      - LMSTUDIO_URL=${LMSTUDIO_URL:-}
-      - LMSTUDIO_MODEL=${LMSTUDIO_MODEL:-local-model}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - app_net
-      - db_net
-    restart: unless-stopped
-
   api:
     build: ./api
     ports:
@@ -110,9 +85,25 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=${POSTGRES_DB}
       - POSTGRES_HOST=db
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - OLLAMA_PRIMARY_MODEL=${OLLAMA_PRIMARY_MODEL:-gemma4:31b-cloud}
+      - OLLAMA_MODELS=${OLLAMA_MODELS:-}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - app_net
       - db_net
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "${WEBUI_PORT:-8501}:80"
+    depends_on:
+      - api
+    networks:
+      - app_net
     restart: unless-stopped
 
 volumes:
