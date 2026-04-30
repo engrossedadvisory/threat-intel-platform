@@ -567,11 +567,19 @@ def dashboard(_auth=AUTH):
             f"FROM threat_reports "
             f"WHERE threat_actor IS NOT NULL AND threat_actor != 'Unknown' "
             f"  AND source_feed NOT IN ({_INFRA_FEEDS}) "
-            f"GROUP BY threat_actor HAVING COUNT(*) >= 2 "
+            f"GROUP BY threat_actor "
             f"ORDER BY report_count DESC LIMIT 20"
         )).fetchall()
         top_actors = [{"threat_actor": r[0], "report_count": r[1],
                        "avg_conf": float(r[2] or 0)} for r in actor_rows]
+
+        # Feed breakdown — reports per operational feed (fallback when actors empty)
+        feed_rows = conn.execute(text(
+            f"SELECT source_feed, COUNT(*) AS count FROM threat_reports "
+            f"WHERE source_feed NOT IN ({_INFRA_FEEDS}) "
+            f"GROUP BY source_feed ORDER BY count DESC LIMIT 15"
+        )).fetchall()
+        feed_breakdown = [{"feed": r[0], "count": r[1]} for r in feed_rows]
 
         # Top TTPs
         ttp_rows = conn.execute(text(
@@ -601,11 +609,12 @@ def dashboard(_auth=AUTH):
         ]
 
     return {
-        "activity":      activity,
-        "risk_dist":     risk_dist,
-        "top_actors":    top_actors,
-        "top_ttps":      top_ttps,
-        "recent_alerts": recent_alerts,
+        "activity":       activity,
+        "risk_dist":      risk_dist,
+        "top_actors":     top_actors,
+        "top_ttps":       top_ttps,
+        "feed_breakdown": feed_breakdown,
+        "recent_alerts":  recent_alerts,
     }
 
 
@@ -777,6 +786,103 @@ def list_darkweb(
             params,
         )
         return {"data": rows_to_list(result)}
+
+
+@app.get("/api/v1/geo/summary", tags=["dashboard"])
+def geo_summary(_auth=AUTH):
+    """
+    Threat actor counts grouped by country of origin.
+    Source: apt_groups profiles (Country of origin field) +
+            any country field on active reports.
+    Returns ISO 3166-1 numeric code for choropleth mapping.
+    """
+    import re as _re
+
+    # ISO 3166-1 numeric codes for countries commonly seen in CTI
+    _COUNTRY_NUMERIC = {
+        "russia": 643, "russian federation": 643,
+        "china": 156, "people's republic of china": 156, "prc": 156,
+        "north korea": 408, "dprk": 408, "democratic people's republic of korea": 408,
+        "iran": 364, "islamic republic of iran": 364,
+        "united states": 840, "usa": 840, "us": 840,
+        "ukraine": 804, "united kingdom": 826, "uk": 826,
+        "india": 356, "pakistan": 586, "vietnam": 704,
+        "nigeria": 566, "brazil": 76, "israel": 376,
+        "germany": 276, "france": 250, "romania": 642,
+        "turkey": 792, "south korea": 410, "republic of korea": 410,
+        "japan": 392, "canada": 124, "australia": 36,
+        "saudi arabia": 682, "united arab emirates": 784, "uae": 784,
+        "belarus": 112, "syria": 760, "lebanon": 422, "egypt": 818,
+        "indonesia": 360, "malaysia": 458, "thailand": 764,
+        "bangladesh": 50, "myanmar": 104, "georgia": 268,
+        "azerbaijan": 31, "kazakhstan": 398, "uzbekistan": 860,
+        "morocco": 504, "ghana": 288, "kenya": 404,
+        "south africa": 710, "colombia": 170, "mexico": 484,
+        "argentina": 32, "peru": 604, "chile": 152,
+        "philippines": 608, "taiwan": 158, "singapore": 702,
+        "hong kong": 344, "netherlands": 528, "sweden": 752,
+        "poland": 616, "czech republic": 203, "hungary": 348,
+        "italy": 380, "spain": 724, "portugal": 620,
+        "greece": 300, "bulgaria": 100, "serbia": 688,
+    }
+
+    country_counts: dict[str, dict] = {}
+
+    with engine.connect() as conn:
+        # From apt_groups profiles
+        rows = conn.execute(text(
+            "SELECT threat_actor, raw_source FROM threat_reports "
+            "WHERE source_feed = 'apt_groups'"
+        )).fetchall()
+
+        for pr in rows:
+            raw = str(pr[1] or "")
+            m = _re.search(r"Country of origin:\s*([^.\n]+)", raw)
+            if not m:
+                continue
+            country_raw = m.group(1).strip().rstrip(".")
+            key = country_raw.lower()
+            if key in country_counts:
+                country_counts[key]["count"] += 1
+            else:
+                numeric = _COUNTRY_NUMERIC.get(key)
+                if not numeric:
+                    # try partial match
+                    for k, v in _COUNTRY_NUMERIC.items():
+                        if k in key or key in k:
+                            numeric = v
+                            break
+                country_counts[key] = {
+                    "country": country_raw,
+                    "numeric": numeric or 0,
+                    "count": 1,
+                }
+
+        # From operational reports with explicit country tags (if any)
+        try:
+            op_rows = conn.execute(text(
+                f"SELECT LOWER(TRIM(country_of_origin)), COUNT(*) "
+                f"FROM threat_reports "
+                f"WHERE country_of_origin IS NOT NULL AND country_of_origin != '' "
+                f"  AND source_feed NOT IN ({_INFRA_FEEDS}) "
+                f"GROUP BY 1"
+            )).fetchall()
+            for row in op_rows:
+                key = str(row[0] or "").lower()
+                cnt = int(row[1] or 0)
+                if key in country_counts:
+                    country_counts[key]["count"] += cnt
+                else:
+                    numeric = _COUNTRY_NUMERIC.get(key, 0)
+                    country_counts[key] = {
+                        "country": key.title(), "numeric": numeric, "count": cnt
+                    }
+        except Exception:
+            pass  # column may not exist
+
+    result = [v for v in country_counts.values() if v["numeric"] and v["count"] > 0]
+    result.sort(key=lambda x: -x["count"])
+    return {"data": result}
 
 
 @app.post("/api/v1/ai/query", tags=["ai"])

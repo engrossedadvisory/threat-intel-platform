@@ -55,6 +55,9 @@ export const deleteWatchlistItem = (id)        =>
 export const fetchWatchlistHits = (params = {}) =>
   req(`/alerts?${new URLSearchParams(params)}`)
 
+// ── Geo ───────────────────────────────────────────────────────────────────────
+export const fetchGeoSummary    = ()           => req('/geo/summary')
+
 // ── Dark Web ──────────────────────────────────────────────────────────────────
 export const fetchDarkWeb       = (params = {}) =>
   req(`/darkweb?${new URLSearchParams(params)}`)
