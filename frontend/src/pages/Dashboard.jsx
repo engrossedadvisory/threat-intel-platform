@@ -3,7 +3,6 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { fetchStats, fetchDashboard, fetchIOCsByType } from '../api/client'
 import MetricCard from '../components/ui/MetricCard'
-import LoadingSpinner from '../components/ui/LoadingSpinner'
 import ActivityAreaChart from '../components/charts/ActivityAreaChart'
 import RiskPieChart from '../components/charts/RiskPieChart'
 import ActorBarChart from '../components/charts/ActorBarChart'
@@ -18,13 +17,16 @@ import {
 export default function Dashboard() {
   const navigate = useNavigate()
 
-  const { data: stats }              = useQuery({ queryKey: ['stats'],       queryFn: fetchStats })
-  const { data: dash, isLoading }    = useQuery({ queryKey: ['dashboard'],   queryFn: fetchDashboard })
-  const { data: iocTypes }           = useQuery({ queryKey: ['iocs-by-type'], queryFn: fetchIOCsByType })
+  const { data: stats }           = useQuery({ queryKey: ['stats'],        queryFn: fetchStats })
+  const { data: dash }            = useQuery({
+    queryKey: ['dashboard'],
+    queryFn: fetchDashboard,
+    retry: 1,
+    // Don't block the page on this — it degrades gracefully to empty charts
+  })
+  const { data: iocTypes }        = useQuery({ queryKey: ['iocs-by-type'],  queryFn: fetchIOCsByType })
 
   const counts = stats?.counts ?? {}
-
-  if (isLoading) return <LoadingSpinner text="Loading intelligence data…" />
 
   const activity     = dash?.activity      ?? []
   const riskDist     = dash?.risk_dist     ?? []

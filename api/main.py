@@ -215,6 +215,31 @@ def list_iocs(
         return {"data": rows_to_list(result), "limit": limit, "offset": offset}
 
 
+@app.get("/api/v1/iocs/by-type", tags=["iocs"])
+def iocs_by_type_early(_auth=AUTH):
+    """IOC counts grouped by type, for pie chart. (Route defined early to avoid {ioc_id} collision)"""
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT ioc_type, COUNT(*) AS count "
+            "FROM iocs GROUP BY ioc_type ORDER BY count DESC"
+        )).fetchall()
+        return {"data": [{"ioc_type": r[0], "count": r[1]} for r in rows]}
+
+
+@app.get("/api/v1/iocs/activity", tags=["iocs"])
+def ioc_activity_early(_auth=AUTH):
+    """IOC counts per day for the last 30 days. (Route defined early to avoid {ioc_id} collision)"""
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT DATE(r.created_at) AS date, COUNT(i.id) AS count "
+            "FROM iocs i "
+            "JOIN threat_reports r ON r.id = i.report_id "
+            "WHERE r.created_at >= NOW() - INTERVAL '30 days' "
+            "GROUP BY DATE(r.created_at) ORDER BY date"
+        )).fetchall()
+        return {"data": [{"date": str(r[0]), "count": r[1]} for r in rows]}
+
+
 @app.get("/api/v1/iocs/{ioc_id}", tags=["iocs"])
 def get_ioc(ioc_id: int, _auth=AUTH):
     """Single IOC with all enrichment results attached."""
@@ -530,10 +555,13 @@ def dashboard(_auth=AUTH):
     with engine.connect() as conn:
 
         # Activity over last 30 days: IOC count + report count per day
+        # NOTE: iocs table has no timestamp; join to threat_reports for the date
         activity_rows = conn.execute(text(
-            "SELECT DATE(created_at) AS date, COUNT(*) AS iocs "
-            "FROM iocs WHERE created_at >= NOW() - INTERVAL '30 days' "
-            "GROUP BY DATE(created_at) ORDER BY date"
+            "SELECT DATE(r.created_at) AS date, COUNT(i.id) AS iocs "
+            "FROM iocs i "
+            "JOIN threat_reports r ON r.id = i.report_id "
+            "WHERE r.created_at >= NOW() - INTERVAL '30 days' "
+            "GROUP BY DATE(r.created_at) ORDER BY date"
         )).fetchall()
         report_rows = conn.execute(text(
             "SELECT DATE(created_at) AS date, COUNT(*) AS reports "
@@ -586,7 +614,7 @@ def dashboard(_auth=AUTH):
             "SELECT t.technique_id, t.name, COUNT(*) AS count "
             "FROM mitre_techniques t "
             "JOIN threat_reports r ON r.ttps::text ILIKE '%' || t.technique_id || '%' "
-            "WHERE r.ttps IS NOT NULL AND r.ttps != '[]' "
+            "WHERE r.ttps IS NOT NULL AND r.ttps::text != '[]' "
             "GROUP BY t.technique_id, t.name "
             "ORDER BY count DESC LIMIT 15"
         )).fetchall()
@@ -759,7 +787,7 @@ def ttp_usage(_auth=AUTH):
             "SELECT t.technique_id, t.name, COUNT(*) AS count "
             "FROM mitre_techniques t "
             "JOIN threat_reports r ON r.ttps::text ILIKE '%' || t.technique_id || '%' "
-            "WHERE r.ttps IS NOT NULL AND r.ttps != '[]' "
+            "WHERE r.ttps IS NOT NULL AND r.ttps::text != '[]' "
             "GROUP BY t.technique_id, t.name ORDER BY count DESC LIMIT 30"
         )).fetchall()
         return {"data": [{"technique_id": r[0], "name": r[1], "count": r[2]}
