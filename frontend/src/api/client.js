@@ -6,11 +6,23 @@
 
 const BASE = '/api/v1'
 
+// Retrieve stored API key (set from Admin → API Keys tab after first key creation)
+export function getStoredApiKey() {
+  return localStorage.getItem('vntl_api_key') || ''
+}
+export function setStoredApiKey(key) {
+  if (key) localStorage.setItem('vntl_api_key', key)
+  else localStorage.removeItem('vntl_api_key')
+}
+
 async function req(path, options = {}) {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...options.headers },
-    ...options,
-  })
+  const apiKey = getStoredApiKey()
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(apiKey ? { 'X-API-Key': apiKey } : {}),
+    ...options.headers,
+  }
+  const res = await fetch(`${BASE}${path}`, { headers, ...options })
   if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`)
   return res.json()
 }
@@ -67,3 +79,18 @@ export const aiQuery            = (prompt)     =>
   req('/ai/query', { method: 'POST', body: JSON.stringify({ prompt }) })
 export const aiAnalyze          = (text, context = '') =>
   req('/ai/analyze', { method: 'POST', body: JSON.stringify({ text, context }) })
+
+// ── Admin — settings ──────────────────────────────────────────────────────────
+export const fetchAdminSettings    = ()            => req('/admin/settings')
+export const saveAdminSettings     = (settings)    =>
+  req('/admin/settings', { method: 'PUT', body: JSON.stringify(settings) })
+export const fetchBootstrapStatus  = ()            => req('/admin/bootstrap')
+
+// ── Admin — API keys ──────────────────────────────────────────────────────────
+export const fetchApiKeys          = ()            => req('/admin/api-keys')
+export const createApiKey          = (body)        =>
+  req('/admin/api-keys', { method: 'POST', body: JSON.stringify(body) })
+export const revokeApiKey          = (id)          =>
+  req(`/admin/api-keys/${id}`, { method: 'DELETE' })
+export const reactivateApiKey      = (id)          =>
+  req(`/admin/api-keys/${id}/activate`, { method: 'POST' })

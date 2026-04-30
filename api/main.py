@@ -19,7 +19,9 @@ TAXII discovery + collection serving at ``/taxii/``.
 """
 
 import hashlib
+import json as json_module
 import os
+import secrets
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -911,6 +913,214 @@ def geo_summary(_auth=AUTH):
     result = [v for v in country_counts.values() if v["numeric"] and v["count"] > 0]
     result.sort(key=lambda x: -x["count"])
     return {"data": result}
+
+
+# ---------------------------------------------------------------------------
+# Admin — platform settings
+# ---------------------------------------------------------------------------
+
+import os as _os_admin, secrets as _secrets_admin
+
+# Canonical settings schema with env-var fallbacks for the admin UI.
+# DB values take precedence; env vars are shown when no DB row exists.
+_SETTINGS_SCHEMA = [
+    # Dark web
+    {"key": "dark_web_enabled",       "label": "Enable Dark Web Monitor",            "type": "bool",      "group": "darkweb", "env": "DARK_WEB_ENABLED"},
+    {"key": "dark_web_keywords",       "label": "Keywords to Monitor",                "type": "multiline", "group": "darkweb", "env": "DARK_WEB_KEYWORDS",       "placeholder": "One keyword per line (brand names, domains, IPs…)"},
+    {"key": "dark_web_onion_sources",  "label": ".onion Sources",                     "type": "multiline", "group": "darkweb", "env": "DARK_WEB_ONION_SOURCES",   "placeholder": "http://example.onion — one per line"},
+    {"key": "dark_web_interval",       "label": "Scan Interval",                      "type": "select",    "group": "darkweb", "env": "DARK_WEB_INTERVAL",
+     "options": [{"value": "3600", "label": "Every 1 hour"}, {"value": "10800", "label": "Every 3 hours"},
+                 {"value": "21600", "label": "Every 6 hours"}, {"value": "43200", "label": "Every 12 hours"},
+                 {"value": "86400", "label": "Every 24 hours"}]},
+    # Threat feeds
+    {"key": "abusech_api_key",         "label": "abuse.ch API Key (URLhaus / ThreatFox)", "type": "secret", "group": "feeds",   "env": "ABUSECH_API_KEY"},
+    {"key": "otx_api_key",             "label": "AlienVault OTX API Key",             "type": "secret",    "group": "feeds",   "env": "OTX_API_KEY"},
+    {"key": "github_token",            "label": "GitHub Personal Access Token",        "type": "secret",    "group": "feeds",   "env": "GITHUB_TOKEN"},
+    # IOC enrichment
+    {"key": "enrichment_vt_key",       "label": "VirusTotal API Key",                 "type": "secret",    "group": "enrichment", "env": "VT_API_KEY"},
+    {"key": "enrichment_gn_key",       "label": "GreyNoise API Key",                  "type": "secret",    "group": "enrichment", "env": "GREYNOISE_API_KEY"},
+    {"key": "enrichment_shodan_key",   "label": "Shodan API Key",                     "type": "secret",    "group": "enrichment", "env": "SHODAN_API_KEY"},
+    # Alerts
+    {"key": "alert_email_enabled",     "label": "Enable Email Alerts",                "type": "bool",      "group": "alerts",  "env": "ALERT_EMAIL_ENABLED"},
+    {"key": "smtp_host",               "label": "SMTP Host",                          "type": "text",      "group": "alerts",  "env": "SMTP_HOST"},
+    {"key": "smtp_port",               "label": "SMTP Port",                          "type": "text",      "group": "alerts",  "env": "SMTP_PORT",    "placeholder": "587"},
+    {"key": "smtp_user",               "label": "SMTP Username",                      "type": "text",      "group": "alerts",  "env": "SMTP_USER"},
+    {"key": "smtp_pass",               "label": "SMTP Password",                      "type": "secret",    "group": "alerts",  "env": "SMTP_PASS"},
+    {"key": "alert_from_email",        "label": "From Address",                       "type": "text",      "group": "alerts",  "env": "ALERT_FROM_EMAIL"},
+    {"key": "alert_to_email",          "label": "Alert Recipient(s)",                 "type": "text",      "group": "alerts",  "env": "ALERT_TO_EMAIL", "placeholder": "admin@example.com, soc@example.com"},
+]
+_SETTINGS_KEYS = {s["key"] for s in _SETTINGS_SCHEMA}
+
+
+def _env_fallback(schema_entry: dict) -> str:
+    env_var = schema_entry.get("env", "")
+    return _os_admin.getenv(env_var, "") if env_var else ""
+
+
+@app.get("/api/v1/admin/settings", tags=["admin"])
+def get_admin_settings(_auth=AUTH):
+    """Return all platform settings with their current values and schema."""
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT key, value, updated_at, updated_by FROM platform_settings"
+        )).fetchall()
+        db_vals = {r[0]: {"value": r[1], "updated_at": r[2].isoformat() if r[2] else None, "updated_by": r[3]}
+                   for r in rows}
+
+    result = {}
+    for s in _SETTINGS_SCHEMA:
+        key  = s["key"]
+        entry = db_vals.get(key, {})
+        val   = entry.get("value")
+        if val is None:
+            val = _env_fallback(s)
+            source = "env"
+        else:
+            source = "db"
+        result[key] = {
+            "value":      val,
+            "source":     source,
+            "updated_at": entry.get("updated_at"),
+            "updated_by": entry.get("updated_by"),
+        }
+    return {"settings": result, "schema": _SETTINGS_SCHEMA}
+
+
+@app.put("/api/v1/admin/settings", tags=["admin"])
+def update_admin_settings(body: dict, _auth=AUTH):
+    """Upsert one or more settings into platform_settings."""
+    updates = {k: v for k, v in body.items() if k in _SETTINGS_KEYS}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No valid setting keys provided")
+
+    with engine.connect() as conn:
+        for key, value in updates.items():
+            val_str = str(value) if not isinstance(value, bool) else str(value).lower()
+            existing = conn.execute(
+                text("SELECT 1 FROM platform_settings WHERE key = :k"), {"k": key}
+            ).fetchone()
+            if existing:
+                conn.execute(text(
+                    "UPDATE platform_settings SET value = :v, updated_at = NOW(), updated_by = 'webui' "
+                    "WHERE key = :k"
+                ), {"v": val_str, "k": key})
+            else:
+                conn.execute(text(
+                    "INSERT INTO platform_settings (key, value, updated_at, updated_by) "
+                    "VALUES (:k, :v, NOW(), 'webui')"
+                ), {"k": key, "v": val_str})
+        conn.commit()
+    return {"saved": list(updates.keys()), "count": len(updates)}
+
+
+# ---------------------------------------------------------------------------
+# Admin — API keys
+# ---------------------------------------------------------------------------
+
+def _generate_key() -> tuple[str, str, str]:
+    """Return (raw_key, sha256_hash, prefix8). raw_key shown once then discarded."""
+    raw    = "vntl_" + _secrets_admin.token_urlsafe(32)
+    hashed = hashlib.sha256(raw.encode()).hexdigest()
+    prefix = raw[:12]   # e.g. "vntl_AbCdEfGh"
+    return raw, hashed, prefix
+
+
+class APIKeyCreateBody(BaseModel):
+    label:       str
+    permissions: list[str] = ["read"]
+
+
+@app.get("/api/v1/admin/api-keys", tags=["admin"])
+def list_api_keys(_auth=AUTH):
+    """List all API keys (prefix + metadata only, never the hash)."""
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT id, key_prefix, label, permissions, active, last_used, created_at "
+            "FROM api_keys ORDER BY created_at DESC"
+        )).fetchall()
+        keys = [
+            {
+                "id":          r[0],
+                "key_prefix":  r[1],
+                "label":       r[2],
+                "permissions": r[3],
+                "active":      r[4],
+                "last_used":   r[5].isoformat() if r[5] else None,
+                "created_at":  r[6].isoformat() if r[6] else None,
+            }
+            for r in rows
+        ]
+    in_bootstrap = not any(k["active"] for k in keys)
+    return {"keys": keys, "bootstrap_mode": in_bootstrap}
+
+
+@app.post("/api/v1/admin/api-keys", tags=["admin"], status_code=201)
+def create_api_key(body: APIKeyCreateBody, _auth=AUTH):
+    """
+    Generate a new API key.  The full key is returned ONCE — store it immediately.
+    Subsequent requests only return the prefix and metadata.
+    """
+    raw, hashed, prefix = _generate_key()
+    with engine.connect() as conn:
+        result = conn.execute(text(
+            "INSERT INTO api_keys (key_hash, key_prefix, label, permissions, active, created_at) "
+            "VALUES (:h, :p, :l, :perms::json, true, NOW()) RETURNING id"
+        ), {
+            "h":    hashed,
+            "p":    prefix,
+            "l":    body.label[:200],
+            "perms": json_module.dumps(body.permissions),
+        })
+        new_id = result.fetchone()[0]
+        conn.commit()
+    return {
+        "id":         new_id,
+        "key":        raw,          # shown ONCE — client must store it
+        "key_prefix": prefix,
+        "label":      body.label,
+        "permissions": body.permissions,
+        "note":       "Copy this key now — it will not be shown again.",
+    }
+
+
+@app.delete("/api/v1/admin/api-keys/{key_id}", tags=["admin"])
+def revoke_api_key(key_id: int, _auth=AUTH):
+    """Deactivate an API key (non-destructive — can be re-enabled manually)."""
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("UPDATE api_keys SET active = false WHERE id = :id"),
+            {"id": key_id},
+        )
+        conn.commit()
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Key not found")
+    return {"revoked": key_id}
+
+
+@app.post("/api/v1/admin/api-keys/{key_id}/activate", tags=["admin"])
+def reactivate_api_key(key_id: int, _auth=AUTH):
+    """Re-activate a previously revoked API key."""
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("UPDATE api_keys SET active = true WHERE id = :id"),
+            {"id": key_id},
+        )
+        conn.commit()
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Key not found")
+    return {"activated": key_id}
+
+
+@app.get("/api/v1/admin/bootstrap", tags=["admin"])
+def bootstrap_status():
+    """Public endpoint — returns whether the platform is in bootstrap mode (no active keys)."""
+    with engine.connect() as conn:
+        try:
+            row = conn.execute(text("SELECT COUNT(*) FROM api_keys WHERE active = true")).fetchone()
+            count = row[0] if row else 0
+        except Exception:
+            count = 0
+    return {"bootstrap_mode": count == 0, "active_keys": count}
 
 
 @app.post("/api/v1/ai/query", tags=["ai"])

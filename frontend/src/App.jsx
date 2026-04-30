@@ -12,6 +12,7 @@ import DarkWeb from './pages/DarkWeb'
 import Watchlist from './pages/Watchlist'
 import AIAnalyst from './pages/AIAnalyst'
 import FeedHealth from './pages/FeedHealth'
+import Admin from './pages/Admin'
 
 export default function App() {
   return (
@@ -32,6 +33,7 @@ export default function App() {
             <Route path="/watchlist"   element={<Watchlist />} />
             <Route path="/ai-analyst"  element={<AIAnalyst />} />
             <Route path="/feed-health" element={<FeedHealth />} />
+            <Route path="/admin"       element={<Admin />} />
             <Route path="*"            element={<Navigate to="/dashboard" replace />} />
           </Routes>
         </main>

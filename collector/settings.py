@@ -21,21 +21,27 @@ log = logging.getLogger(__name__)
 # ─── Env-var fallbacks ────────────────────────────────────────────────────────
 # These are used when the platform_settings table has no row for a given key.
 _ENV_FALLBACKS: dict[str, str] = {
+    # ── Dark web monitor ──────────────────────────────────────────────────────
     "dark_web_enabled":       os.getenv("DARK_WEB_ENABLED",       "false"),
     "dark_web_keywords":      os.getenv("DARK_WEB_KEYWORDS",       ""),
     "dark_web_onion_sources": os.getenv("DARK_WEB_ONION_SOURCES",  ""),
     "dark_web_interval":      os.getenv("DARK_WEB_INTERVAL",       "21600"),
-    "enrichment_vt_key":      os.getenv("VT_API_KEY",          ""),
-    "enrichment_gn_key":      os.getenv("GREYNOISE_API_KEY",    ""),
-    "enrichment_shodan_key":  os.getenv("SHODAN_API_KEY",       ""),
-    "github_token":           os.getenv("GITHUB_TOKEN",         ""),
-    "alert_email_enabled":    "false",
-    "smtp_host":              os.getenv("SMTP_HOST",            ""),
-    "smtp_port":              os.getenv("SMTP_PORT",            "587"),
-    "smtp_user":              os.getenv("SMTP_USER",            ""),
-    "smtp_pass":              os.getenv("SMTP_PASS",            ""),
-    "alert_from_email":       os.getenv("ALERT_FROM_EMAIL",     ""),
-    "alert_to_email":         os.getenv("ALERT_TO_EMAIL",       ""),
+    # ── Feed / collector API keys ─────────────────────────────────────────────
+    "abusech_api_key":        os.getenv("ABUSECH_API_KEY",        ""),
+    "otx_api_key":            os.getenv("OTX_API_KEY",            ""),
+    "github_token":           os.getenv("GITHUB_TOKEN",           ""),
+    # ── IOC enrichment API keys ───────────────────────────────────────────────
+    "enrichment_vt_key":      os.getenv("VT_API_KEY",             ""),
+    "enrichment_gn_key":      os.getenv("GREYNOISE_API_KEY",      ""),
+    "enrichment_shodan_key":  os.getenv("SHODAN_API_KEY",         ""),
+    # ── Alert channels ────────────────────────────────────────────────────────
+    "alert_email_enabled":    os.getenv("ALERT_EMAIL_ENABLED",    "false"),
+    "smtp_host":              os.getenv("SMTP_HOST",               ""),
+    "smtp_port":              os.getenv("SMTP_PORT",               "587"),
+    "smtp_user":              os.getenv("SMTP_USER",               ""),
+    "smtp_pass":              os.getenv("SMTP_PASS",               ""),
+    "alert_from_email":       os.getenv("ALERT_FROM_EMAIL",        ""),
+    "alert_to_email":         os.getenv("ALERT_TO_EMAIL",          ""),
 }
 
 
