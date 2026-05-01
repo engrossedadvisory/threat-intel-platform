@@ -85,25 +85,14 @@ export default function DarkWeb() {
         <div className="flex-1">
           <p className="text-sm font-medium text-slate-300">Dark Web Monitor</p>
           <p className="text-xs text-slate-600 mt-0.5">
-            Monitors Tor hidden services for keyword matches. Raw breach content is never stored — metadata only.
+            Scans Ahmia, DarkSearch, paste sites, and HudsonRock for keyword mentions.
+            Raw breach content is never stored — metadata only.
           </p>
-          <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
-            <div className="bg-navy-700 rounded px-2 py-1.5 border border-navy-500">
-              <span className="text-slate-500">Enable: </span>
-              <code className="text-sky-400">DARK_WEB_ENABLED=true</code>
-            </div>
-            <div className="bg-navy-700 rounded px-2 py-1.5 border border-navy-500">
-              <span className="text-slate-500">Keywords: </span>
-              <code className="text-sky-400">DARK_WEB_KEYWORDS=keyword1,keyword2</code>
-            </div>
-            <div className="bg-navy-700 rounded px-2 py-1.5 border border-navy-500">
-              <span className="text-slate-500">Interval: </span>
-              <code className="text-sky-400">DARK_WEB_INTERVAL=21600</code>
-            </div>
-          </div>
-          <p className="text-xs text-slate-700 mt-2">
-            Set these in your <code className="text-slate-500">.env</code> file and restart the collector.
-            Also requires the Tor proxy container to successfully bootstrap (check server firewall — Tor needs outbound port 443/9001).
+          <p className="text-xs text-slate-600 mt-1.5">
+            Configure keywords, scan interval, and optional Intelligence X API key in{' '}
+            <a href="/admin" className="text-sky-400 hover:text-sky-300 transition-colors underline underline-offset-2">
+              Admin → Dark Web
+            </a>.
           </p>
         </div>
       </div>
@@ -125,7 +114,10 @@ export default function DarkWeb() {
               <Globe size={32} className="mx-auto mb-3 opacity-30" />
               <p>No dark web mentions yet.</p>
               <p className="text-xs mt-1">
-                Set <code className="text-slate-500">DARK_WEB_ENABLED=true</code> and <code className="text-slate-500">DARK_WEB_KEYWORDS</code> in .env, then restart the collector.
+                Enable the monitor and add keywords in{' '}
+                <a href="/admin" className="text-sky-400 hover:text-sky-300 transition-colors">
+                  Admin → Dark Web
+                </a>.
               </p>
             </div>
           : <DataTable columns={COLS} data={rows} pageSize={25} />
