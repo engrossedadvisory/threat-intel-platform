@@ -927,7 +927,8 @@ _SETTINGS_SCHEMA = [
     # Dark web
     {"key": "dark_web_enabled",       "label": "Enable Dark Web Monitor",            "type": "bool",      "group": "darkweb", "env": "DARK_WEB_ENABLED"},
     {"key": "dark_web_keywords",       "label": "Keywords to Monitor",                "type": "multiline", "group": "darkweb", "env": "DARK_WEB_KEYWORDS",       "placeholder": "One keyword per line (brand names, domains, IPs…)"},
-    {"key": "dark_web_onion_sources",  "label": ".onion Sources",                     "type": "multiline", "group": "darkweb", "env": "DARK_WEB_ONION_SOURCES",   "placeholder": "http://example.onion — one per line"},
+    {"key": "dark_web_onion_sources",  "label": "Custom .onion Sources (Tor required)", "type": "multiline", "group": "darkweb", "env": "DARK_WEB_ONION_SOURCES",   "placeholder": "http://example.onion — one per line (optional, needs Tor proxy)"},
+    {"key": "intelx_api_key",          "label": "Intelligence X API Key",             "type": "secret",    "group": "darkweb", "env": "INTELX_API_KEY",            "placeholder": "Get free key at intelx.io — expands dark-web coverage"},
     {"key": "dark_web_interval",       "label": "Scan Interval",                      "type": "select",    "group": "darkweb", "env": "DARK_WEB_INTERVAL",
      "options": [{"value": "3600", "label": "Every 1 hour"}, {"value": "10800", "label": "Every 3 hours"},
                  {"value": "21600", "label": "Every 6 hours"}, {"value": "43200", "label": "Every 12 hours"},

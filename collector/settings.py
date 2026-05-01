@@ -26,6 +26,7 @@ _ENV_FALLBACKS: dict[str, str] = {
     "dark_web_keywords":      os.getenv("DARK_WEB_KEYWORDS",       ""),
     "dark_web_onion_sources": os.getenv("DARK_WEB_ONION_SOURCES",  ""),
     "dark_web_interval":      os.getenv("DARK_WEB_INTERVAL",       "21600"),
+    "intelx_api_key":         os.getenv("INTELX_API_KEY",          ""),
     # ── Feed / collector API keys ─────────────────────────────────────────────
     "abusech_api_key":        os.getenv("ABUSECH_API_KEY",        ""),
     "otx_api_key":            os.getenv("OTX_API_KEY",            ""),

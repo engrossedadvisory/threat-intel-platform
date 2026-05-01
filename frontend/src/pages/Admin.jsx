@@ -211,8 +211,33 @@ function DarkWebTab({ schema, settings, onSave, saving }) {
           }`}>{isOn ? 'Enabled' : 'Disabled'}</span>
         </div>
         <p className="text-xs text-slate-600">
-          Monitors Tor hidden services and dark web indexes for keyword mentions.
-          Uses Ahmia.fi (clearnet) by default; direct .onion access requires a working Tor proxy.
+          Scans multiple clearnet dark-web intelligence sources for keyword mentions — no Tor
+          required. Optional: add an Intelligence X key for broader coverage, or configure
+          custom .onion sources if you have a Tor proxy running.
+        </p>
+      </div>
+
+      {/* Active clearnet engines info */}
+      <div className="card border border-navy-600">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
+          Active Clearnet Engines (always on when enabled)
+        </p>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {[
+            { name: 'Ahmia.fi',       desc: '.onion index',         color: 'text-sky-400' },
+            { name: 'DarkSearch.io',  desc: 'Dark web search API',  color: 'text-violet-400' },
+            { name: 'Paste Monitor',  desc: 'Pastebin / Gist / etc', color: 'text-amber-400' },
+            { name: 'HudsonRock',     desc: 'Infostealer OSINT',    color: 'text-emerald-400' },
+          ].map(({ name, desc, color }) => (
+            <div key={name} className="bg-navy-800 rounded border border-navy-500 px-3 py-2">
+              <p className={`text-xs font-semibold ${color}`}>{name}</p>
+              <p className="text-[11px] text-slate-600 mt-0.5">{desc}</p>
+            </div>
+          ))}
+        </div>
+        <p className="text-[11px] text-slate-600 mt-2">
+          Intelligence X adds paid breach-data coverage — enter your API key below.
+          Custom .onion sources require a running Tor proxy.
         </p>
       </div>
 
@@ -232,14 +257,14 @@ function DarkWebTab({ schema, settings, onSave, saving }) {
 
       <div className="card border border-navy-500">
         <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">
-          Tor Proxy Status
+          Tor Proxy (Optional)
         </p>
         <div className="flex items-center gap-2 text-xs text-slate-500">
           <AlertTriangle size={13} className="text-amber-500 shrink-0" />
           <span>
-            Tor requires outbound port 443 and 9001/9030. If the tor-proxy container is stuck
-            bootstrapping, check that your server's firewall allows outbound Tor traffic.
-            Ahmia.fi clearnet search works without Tor.
+            Tor is only needed for custom .onion sources above. Clearnet engines (Ahmia, DarkSearch,
+            HudsonRock, Paste Monitor) work without it. If using Tor, ensure outbound ports 443
+            and 9001/9030 are open on your firewall.
           </span>
         </div>
       </div>

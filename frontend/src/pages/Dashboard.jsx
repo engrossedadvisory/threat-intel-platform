@@ -8,7 +8,7 @@ import RiskPieChart from '../components/charts/RiskPieChart'
 import ActorBarChart from '../components/charts/ActorBarChart'
 import TTPBarChart from '../components/charts/TTPBarChart'
 import IOCPieChart from '../components/charts/IOCPieChart'
-import GeoMap from '../components/charts/GeoMap'
+import GlobeMap from '../components/charts/GlobeMap'
 import {
   ShieldAlert, Crosshair, FileWarning, Radio,
   Bell, Bug, Eye, Cpu,
@@ -70,7 +70,7 @@ export default function Dashboard() {
       {/* ── Row 2: Geo Map ──────────────────────────────────────────────────── */}
       <div className="card">
         <p className="section-title">Threat Actor Geographic Origin</p>
-        <GeoMap />
+        <GlobeMap />
       </div>
 
       {/* ── Row 3: Top Actors + Risk Distribution ──────────────────────────── */}

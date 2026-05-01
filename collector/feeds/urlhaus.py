@@ -23,13 +23,14 @@ class URLhausFeed(BaseFeed):
         self._api_key = settings.get("abusech_api_key", "") or os.getenv("ABUSECH_API_KEY", "")
 
     def fetch(self):
+        # abuse.ch changed URLhaus to GET-only in 2024; POST returns 405.
         headers = {}
         if self._api_key:
             headers["Auth-Key"] = self._api_key
 
-        resp = requests.post(
+        resp = requests.get(
             "https://urlhaus-api.abuse.ch/v1/urls/recent/",
-            data={"limit": 200},
+            params={"limit": 200},
             headers=headers,
             timeout=30,
         )

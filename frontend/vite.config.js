@@ -15,5 +15,16 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        // Keep Three.js + globe in its own lazy chunk so it doesn't block
+        // initial page load (lazily imported via React.lazy in GlobeMap)
+        manualChunks(id) {
+          if (id.includes('react-globe.gl') || id.includes('three')) {
+            return 'globe-vendor'
+          }
+        },
+      },
+    },
   },
 })
