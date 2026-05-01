@@ -61,12 +61,12 @@ const TARGETS = [
 const FLAT_GEO = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json'
 
 function flatColor(count, max) {
-  if (!count || count === 0) return '#374151'   // dark grey — land, not blue ocean
+  if (!count || count === 0) return '#1c2620'   // dark charcoal-green — land
   const t = count / max
   if (t >= 0.7) return '#ef4444'   // red
   if (t >= 0.4) return '#f97316'   // orange
   if (t >= 0.15) return '#eab308'  // yellow
-  return '#86efac'                  // light green — minimal
+  return '#4ade80'                  // green — minimal
 }
 
 function FlatMap({ rows, max }) {
@@ -108,16 +108,18 @@ function FlatMap({ rows, max }) {
 }
 
 // ─── Colour helpers ───────────────────────────────────────────────────────────
-// Ocean is blue (from globe texture) — land masses must NOT be blue.
-// Inactive countries: dark olive/slate so they read as land, not sea.
-// Active countries: red → orange → yellow threat gradient.
+// The globe texture (earth-dark.jpg) renders ocean as blue.
+// Polygon overlays cover ONLY land — so we paint land dark and let the
+// blue ocean texture show through unobstructed around the edges.
+// Inactive land: solid dark charcoal — clearly NOT ocean-blue.
+// Threat countries: fully opaque red/orange/yellow so they pop.
 function polyFill(count, max) {
-  if (!count || count === 0) return 'rgba(55,65,55,0.82)'   // dark olive-grey — clearly land
+  if (!count || count === 0) return '#1c2620'   // very dark forest — land, zero ambiguity with blue ocean
   const t = count / max
-  if (t >= 0.7) return 'rgba(239,68,68,0.92)'    // red — critical
-  if (t >= 0.4) return 'rgba(249,115,22,0.88)'   // orange — high
-  if (t >= 0.15) return 'rgba(234,179,8,0.84)'   // yellow — medium
-  return 'rgba(134,239,172,0.70)'                 // light green — minimal/observed
+  if (t >= 0.7) return '#ef4444'    // red — critical
+  if (t >= 0.4) return '#f97316'    // orange — high
+  if (t >= 0.15) return '#eab308'   // yellow — medium
+  return '#4ade80'                   // green — minimal/observed
 }
 
 function arcColors(t) {
@@ -224,7 +226,7 @@ function GlobeRenderer({ rows, max, countries, dims }) {
       bumpImageUrl="//unpkg.com/three-globe/example/img/earth-topology.png"
       polygonsData={countries.features}
       polygonCapColor={polyColor}
-      polygonSideColor={() => 'rgba(8,18,36,0.5)'}
+      polygonSideColor={() => '#111816'}
       polygonStrokeColor={() => '#0d1f3c'}
       polygonLabel={polyLabel}
       polygonAltitude={0.006}
